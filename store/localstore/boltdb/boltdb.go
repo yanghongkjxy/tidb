@@ -20,7 +20,7 @@ import (
 	"github.com/boltdb/bolt"
 	"github.com/juju/errors"
 	"github.com/pingcap/tidb/store/localstore/engine"
-	"github.com/pingcap/tidb/util/bytes"
+	"github.com/pingcap/tidb/terror"
 )
 
 var (
@@ -44,7 +44,7 @@ func (d *db) Get(key []byte) ([]byte, error) {
 		if v == nil {
 			return errors.Trace(engine.ErrNotFound)
 		}
-		value = bytes.CloneBytes(v)
+		value = cloneBytes(v)
 		return nil
 	})
 
@@ -63,7 +63,7 @@ func (d *db) Seek(startKey []byte) ([]byte, []byte, error) {
 			k, v = c.Seek(startKey)
 		}
 		if k != nil {
-			key, value = bytes.CloneBytes(k), bytes.CloneBytes(v)
+			key, value = cloneBytes(k), cloneBytes(v)
 		}
 		return nil
 	})
@@ -90,7 +90,7 @@ func (d *db) SeekReverse(startKey []byte) ([]byte, []byte, error) {
 			k, v = c.Prev()
 		}
 		if k != nil {
-			key, value = bytes.CloneBytes(k), bytes.CloneBytes(v)
+			key, value = cloneBytes(k), cloneBytes(v)
 		}
 		return nil
 	})
@@ -175,7 +175,10 @@ type Driver struct {
 // Open opens or creates a local storage database with given path.
 func (driver Driver) Open(dbPath string) (engine.DB, error) {
 	base := path.Dir(dbPath)
-	os.MkdirAll(base, 0755)
+	err := os.MkdirAll(base, 0755)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
 
 	d, err := bolt.Open(dbPath, 0600, nil)
 	if err != nil {
@@ -188,7 +191,8 @@ func (driver Driver) Open(dbPath string) (engine.DB, error) {
 	}
 
 	if _, err = tx.CreateBucketIfNotExists(bucketName); err != nil {
-		tx.Rollback()
+		err1 := tx.Rollback()
+		terror.Log(errors.Trace(err1))
 		return nil, errors.Trace(err)
 	}
 
@@ -197,4 +201,9 @@ func (driver Driver) Open(dbPath string) (engine.DB, error) {
 	}
 
 	return &db{d}, nil
+}
+
+// cloneBytes returns a deep copy of slice b.
+func cloneBytes(b []byte) []byte {
+	return append([]byte(nil), b...)
 }

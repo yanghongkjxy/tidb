@@ -16,14 +16,9 @@ package executor_test
 import (
 	. "github.com/pingcap/check"
 	"github.com/pingcap/tidb/util/testkit"
-	"github.com/pingcap/tidb/util/testleak"
 )
 
 func (s *testSuite) TestDirtyTransaction(c *C) {
-	defer func() {
-		s.cleanEnv(c)
-		testleak.AfterTest(c)
-	}()
 	tk := testkit.NewTestKit(c, s.store)
 	tk.MustExec("use test")
 	tk.MustExec("drop table if exists t")
@@ -32,6 +27,7 @@ func (s *testSuite) TestDirtyTransaction(c *C) {
 	tk.MustExec("begin")
 	tk.MustQuery("select * from t").Check(testkit.Rows("2 3", "4 8", "6 8"))
 	tk.MustExec("insert t values (1, 5), (3, 4), (7, 6)")
+	tk.MustQuery("select * from information_schema.columns")
 	tk.MustQuery("select * from t").Check(testkit.Rows("1 5", "2 3", "3 4", "4 8", "6 8", "7 6"))
 	tk.MustQuery("select * from t where a = 1").Check(testkit.Rows("1 5"))
 	tk.MustQuery("select * from t order by a desc").Check(testkit.Rows("7 6", "6 8", "4 8", "3 4", "2 3", "1 5"))
@@ -58,5 +54,13 @@ func (s *testSuite) TestDirtyTransaction(c *C) {
 	tk.MustExec("truncate table t")
 	tk.MustExec("insert t values (3, 4)")
 	tk.MustQuery("select * from t").Check(testkit.Rows("3 4"))
-	tk.Exec("abort")
+	tk.MustExec("commit")
+
+	tk.MustExec("drop table if exists t")
+	tk.MustExec("create table t (a int, b int)")
+	tk.MustExec("insert t values (2, 3), (4, 5), (6, 7)")
+	tk.MustExec("begin")
+	tk.MustExec("insert t values (0, 1)")
+	tk.MustQuery("select * from t where b = 3").Check(testkit.Rows("2 3"))
+	tk.MustExec("commit")
 }

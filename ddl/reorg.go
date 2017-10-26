@@ -14,114 +14,38 @@
 package ddl
 
 import (
-	"fmt"
-	"sync"
+	"sync/atomic"
 	"time"
 
+	log "github.com/Sirupsen/logrus"
 	"github.com/juju/errors"
-	"github.com/ngaut/log"
 	"github.com/pingcap/tidb/context"
 	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/meta"
 	"github.com/pingcap/tidb/model"
 	"github.com/pingcap/tidb/mysql"
-	"github.com/pingcap/tidb/sessionctx/variable"
-	"github.com/pingcap/tidb/terror"
+	"github.com/pingcap/tidb/util/mock"
 )
 
-var _ context.Context = &mockContext{}
-
-// mockContext implements context.Context interface for testing.
-type mockContext struct {
-	store       kv.Storage
-	mux         sync.Mutex
-	m           map[fmt.Stringer]interface{}
-	txn         kv.Transaction
-	sessionVars *variable.SessionVars
-}
-
-func (c *mockContext) GetTxn(forceNew bool) (kv.Transaction, error) {
-	c.mux.Lock()
-	defer c.mux.Unlock()
-	if forceNew {
-		if c.txn != nil {
-			if err := c.txn.Commit(); err != nil {
-				return nil, errors.Trace(err)
-			}
-			c.txn = nil
-		}
-	}
-	if c.txn != nil {
-		return c.txn, nil
-	}
-
-	txn, err := c.store.Begin()
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-
-	c.txn = txn
-	return c.txn, nil
-}
-
-func (c *mockContext) finishTxn(rollback bool) error {
-	if c.txn == nil {
-		return nil
-	}
-
-	var err error
-	if rollback {
-		err = c.txn.Rollback()
-	} else {
-		err = c.txn.Commit()
-	}
-
-	c.txn = nil
-
-	return errors.Trace(err)
-}
-
-func (c *mockContext) RollbackTxn() error {
-	return c.finishTxn(true)
-}
-
-func (c *mockContext) CommitTxn() error {
-	return c.finishTxn(false)
-}
-
-func (c *mockContext) GetClient() kv.Client {
-	return c.store.GetClient()
-}
-
-func (c *mockContext) SetValue(key fmt.Stringer, value interface{}) {
-	c.m[key] = value
-}
-
-func (c *mockContext) Value(key fmt.Stringer) interface{} {
-	return c.m[key]
-}
-
-func (c *mockContext) ClearValue(key fmt.Stringer) {
-	delete(c.m, key)
-}
-
-func (c *mockContext) GetSessionVars() *variable.SessionVars {
-	return c.sessionVars
-}
-
-func (d *ddl) newMockContext() context.Context {
-	c := &mockContext{
-		store:       d.store,
-		m:           make(map[fmt.Stringer]interface{}),
-		sessionVars: variable.NewSessionVars(),
-	}
-	c.sessionVars.SetStatusFlag(mysql.ServerStatusAutocommit, false)
+// newContext gets a context. It is only used for adding column in reorganization state.
+func (d *ddl) newContext() context.Context {
+	c := mock.NewContext()
+	c.Store = d.store
+	c.GetSessionVars().SetStatusFlag(mysql.ServerStatusAutocommit, false)
 	return c
 }
 
 const waitReorgTimeout = 10 * time.Second
 
-func (d *ddl) runReorgJob(f func() error) error {
+func (d *ddl) setReorgRowCount(count int64) {
+	atomic.StoreInt64(&d.reorgRowCount, count)
+}
+
+func (d *ddl) getReorgRowCount() int64 {
+	return atomic.LoadInt64(&d.reorgRowCount)
+}
+
+func (d *ddl) runReorgJob(job *model.Job, f func() error) error {
 	if d.reorgDoneCh == nil {
 		// start a reorganization job
 		d.wait.Add(1)
@@ -139,7 +63,7 @@ func (d *ddl) runReorgJob(f func() error) error {
 	// we will wait 2 * lease outer and try checking again,
 	// so we use a very little timeout here.
 	if d.lease > 0 {
-		waitTimeout = 1 * time.Millisecond
+		waitTimeout = 50 * time.Millisecond
 	}
 
 	// wait reorganization job done or timeout
@@ -147,126 +71,43 @@ func (d *ddl) runReorgJob(f func() error) error {
 	case err := <-d.reorgDoneCh:
 		log.Info("[ddl] run reorg job done")
 		d.reorgDoneCh = nil
+		// Update a job's RowCount.
+		job.SetRowCount(d.getReorgRowCount())
+		d.setReorgRowCount(0)
 		return errors.Trace(err)
 	case <-d.quitCh:
 		log.Info("[ddl] run reorg job ddl quit")
-		// we return errWaitReorgTimeout here too, so that outer loop will break.
+		d.setReorgRowCount(0)
+		// We return errWaitReorgTimeout here too, so that outer loop will break.
 		return errWaitReorgTimeout
 	case <-time.After(waitTimeout):
-		log.Infof("[ddl] run reorg job wait timeout :%v", waitTimeout)
-		// if timeout, we will return, check the owner and retry to wait job done again.
+		log.Infof("[ddl] run reorg job wait timeout %v", waitTimeout)
+		// Update a job's RowCount.
+		job.SetRowCount(d.getReorgRowCount())
+		// If timeout, we will return, check the owner and retry to wait job done again.
 		return errWaitReorgTimeout
 	}
 }
 
-func (d *ddl) isReorgRunnable(txn kv.Transaction, flag JobType) error {
+func (d *ddl) isReorgRunnable() error {
 	if d.isClosed() {
-		// worker is closed, can't run reorganization.
-		return errors.Trace(errInvalidWorker.Gen("worker is closed"))
+		// Worker is closed. So it can't do the reorganizational job.
+		return errInvalidWorker.Gen("worker is closed")
 	}
 
-	t := meta.NewMeta(txn)
-	owner, err := d.getJobOwner(t, flag)
-	if err != nil {
-		return errors.Trace(err)
+	select {
+	case <-d.notifyCancelReorgJob:
+		// Job is cancelled. So it can't be done.
+		return errCancelledDDLJob
+	default:
 	}
-	if owner == nil || owner.OwnerID != d.uuid {
-		// if no owner, we will try later, so here just return error.
-		// or another server is owner, return error too.
-		log.Infof("[ddl] %s job, self id %s owner %s, txnTS:%d", flag, d.uuid, owner, txn.StartTS())
+
+	if !d.isOwner() {
+		// If it's not the owner, we will try later, so here just returns an error.
+		log.Infof("[ddl] the %s not the job owner", d.uuid)
 		return errors.Trace(errNotOwner)
 	}
-
 	return nil
-}
-
-// delKeysWithStartKey deletes keys with start key in a limited number. If limit < 0, deletes all keys.
-// It returns the number of rows deleted, next start key and the error.
-func (d *ddl) delKeysWithStartKey(prefix, startKey kv.Key, jobType JobType, job *model.Job, limit int) (int, kv.Key, error) {
-	limitedDel := limit >= 0
-
-	var count int
-	total := job.GetRowCount()
-	keys := make([]kv.Key, 0, defaultBatchCnt)
-	for {
-		if limitedDel && count >= limit {
-			break
-		}
-		batch := defaultBatchCnt
-		if limitedDel && count+batch > limit {
-			batch = limit - count
-		}
-		startTS := time.Now()
-		err := kv.RunInNewTxn(d.store, true, func(txn kv.Transaction) error {
-			if err1 := d.isReorgRunnable(txn, jobType); err1 != nil {
-				return errors.Trace(err1)
-			}
-
-			iter, err := txn.Seek(startKey)
-			if err != nil {
-				return errors.Trace(err)
-			}
-			defer iter.Close()
-
-			for i := 0; i < batch; i++ {
-				if iter.Valid() && iter.Key().HasPrefix(prefix) {
-					keys = append(keys, iter.Key().Clone())
-					err = iter.Next()
-					if err != nil {
-						return errors.Trace(err)
-					}
-				} else {
-					break
-				}
-			}
-
-			for _, key := range keys {
-				err := txn.Delete(key)
-				// must skip ErrNotExist
-				// if key doesn't exist, skip this error.
-				if err != nil && !terror.ErrorEqual(err, kv.ErrNotExist) {
-					return errors.Trace(err)
-				}
-			}
-
-			count += len(keys)
-			total += int64(len(keys))
-			return nil
-		})
-		sub := time.Since(startTS).Seconds()
-		if err != nil {
-			log.Warnf("[ddl] deleted %d keys failed, take time %v, deleted %d keys in total", len(keys), sub, total)
-			return 0, startKey, errors.Trace(err)
-		}
-
-		job.SetRowCount(total)
-		batchHandleDataHistogram.WithLabelValues(batchDelData).Observe(sub)
-		log.Infof("[ddl] deleted %d keys take time %v, deleted %d keys in total", len(keys), sub, total)
-
-		if len(keys) > 0 {
-			startKey = keys[len(keys)-1]
-		}
-
-		if noMoreKeysToDelete := len(keys) < batch; noMoreKeysToDelete {
-			break
-		}
-
-		keys = keys[:0]
-	}
-
-	return count, startKey, nil
-}
-
-// addDBHistoryInfo adds schema version and schema information that are used for binlog.
-// dbInfo is added in the following operations: create database, drop database.
-func addDBHistoryInfo(job *model.Job, ver int64, dbInfo *model.DBInfo) {
-	job.Args = []interface{}{ver, dbInfo}
-}
-
-// addTableHistoryInfo adds schema version and table information that are used for binlog.
-// tblInfo is added except for the following operations: create database, drop database.
-func addTableHistoryInfo(job *model.Job, ver int64, tblInfo *model.TableInfo) {
-	job.Args = []interface{}{ver, tblInfo}
 }
 
 type reorgInfo struct {
@@ -301,11 +142,6 @@ func (d *ddl) getReorgInfo(t *meta.Meta, job *model.Job) (*reorgInfo, error) {
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
-	}
-
-	if info.Handle > 0 {
-		// we have already handled this handle, so use next
-		info.Handle++
 	}
 
 	return info, errors.Trace(err)

@@ -23,8 +23,8 @@ import (
 	"sync"
 	"time"
 
+	log "github.com/Sirupsen/logrus"
 	"github.com/juju/errors"
-	"github.com/ngaut/log"
 	"github.com/pingcap/tidb/ast"
 	"github.com/pingcap/tidb/context"
 	"github.com/pingcap/tidb/domain"
@@ -34,15 +34,15 @@ import (
 	"github.com/pingcap/tidb/store/localstore"
 	"github.com/pingcap/tidb/store/localstore/engine"
 	"github.com/pingcap/tidb/store/localstore/goleveldb"
+	"github.com/pingcap/tidb/terror"
 	"github.com/pingcap/tidb/util"
 	"github.com/pingcap/tidb/util/types"
+	"google.golang.org/grpc"
 )
 
 // Engine prefix name
 const (
-	EngineGoLevelDBMemory        = "memory://"
-	defaultMaxRetries            = 30
-	retryInterval         uint64 = 500
+	EngineGoLevelDBMemory = "memory://"
 )
 
 type domainMap struct {
@@ -59,19 +59,31 @@ func (dm *domainMap) Get(store kv.Storage) (d *domain.Domain, err error) {
 		return
 	}
 
-	lease := time.Duration(0)
+	ddlLease := time.Duration(0)
+	statisticLease := time.Duration(0)
 	if !localstore.IsLocalStore(store) {
-		lease = schemaLease
+		ddlLease = schemaLease
+		statisticLease = statsLease
 	}
-	err = util.RunWithRetry(defaultMaxRetries, retryInterval, func() (retry bool, err1 error) {
-		d, err1 = domain.NewDomain(store, lease)
+	err = util.RunWithRetry(util.DefaultMaxRetries, util.RetryInterval, func() (retry bool, err1 error) {
+		log.Infof("store %v new domain, ddl lease %v, stats lease %d", store.UUID(), ddlLease, statisticLease)
+		factory := createSessionFunc(store)
+		sysFactory := createSessionWithDomainFunc(store)
+		d, err1 = domain.NewDomain(store, ddlLease, statisticLease, factory, sysFactory)
 		return true, errors.Trace(err1)
 	})
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
 	dm.domains[key] = d
+
 	return
+}
+
+func (dm *domainMap) Delete(store kv.Storage) {
+	dm.mu.Lock()
+	delete(dm.domains, store.UUID())
+	dm.mu.Unlock()
 }
 
 var (
@@ -89,6 +101,12 @@ var (
 	// but you must know that too little may cause badly performance degradation.
 	// For production, you should set a big schema lease, like 300s+.
 	schemaLease = 1 * time.Second
+
+	// statsLease is the time for reload stats table.
+	statsLease = 3 * time.Second
+
+	// The maximum number of retries to recover from retryable errors.
+	commitRetryLimit = 10
 )
 
 // SetSchemaLease changes the default schema lease time for DDL.
@@ -98,11 +116,27 @@ func SetSchemaLease(lease time.Duration) {
 	schemaLease = lease
 }
 
+// SetStatsLease changes the default stats lease time for loading stats info.
+func SetStatsLease(lease time.Duration) {
+	statsLease = lease
+}
+
+// SetCommitRetryLimit setups the maximum number of retries when trying to recover
+// from retryable errors.
+// Retryable errors are generally refer to temporary errors that are expected to be
+// reinstated by retry, including network interruption, transaction conflicts, and
+// so on.
+func SetCommitRetryLimit(limit int) {
+	commitRetryLimit = limit
+}
+
 // Parse parses a query string to raw ast.StmtNode.
 func Parse(ctx context.Context, src string) ([]ast.StmtNode, error) {
 	log.Debug("compiling", src)
 	charset, collation := ctx.GetSessionVars().GetCharsetInfo()
-	stmts, err := parser.New().Parse(src, charset, collation)
+	p := parser.New()
+	p.SetSQLMode(ctx.GetSessionVars().SQLMode)
+	stmts, err := p.Parse(src, charset, collation)
 	if err != nil {
 		log.Warnf("compiling %s, error: %v", src, err)
 		return nil, errors.Trace(err)
@@ -111,40 +145,41 @@ func Parse(ctx context.Context, src string) ([]ast.StmtNode, error) {
 }
 
 // Compile is safe for concurrent use by multiple goroutines.
-func Compile(ctx context.Context, rawStmt ast.StmtNode) (ast.Statement, error) {
+func Compile(ctx context.Context, stmtNode ast.StmtNode) (ast.Statement, error) {
 	compiler := executor.Compiler{}
-	st, err := compiler.Compile(ctx, rawStmt)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	return st, nil
+	stmt, err := compiler.Compile(ctx, stmtNode)
+	return stmt, errors.Trace(err)
 }
 
-func runStmt(ctx context.Context, s ast.Statement, args ...interface{}) (ast.RecordSet, error) {
+// runStmt executes the ast.Statement and commit or rollback the current transaction.
+func runStmt(ctx context.Context, s ast.Statement) (ast.RecordSet, error) {
 	var err error
 	var rs ast.RecordSet
-	// before every execution, we must clear affectedrows.
-	ctx.GetSessionVars().SetAffectedRows(0)
-	if s.IsDDL() {
-		err = ctx.CommitTxn()
-		if err != nil {
-			return nil, errors.Trace(err)
-		}
-	}
+	se := ctx.(*session)
 	rs, err = s.Exec(ctx)
 	// All the history should be added here.
-	se := ctx.(*session)
-	se.history.add(0, s)
-	// MySQL DDL should be auto-commit.
-	if s.IsDDL() || se.sessionVars.ShouldAutocommit() {
+	GetHistory(ctx).Add(0, s, se.sessionVars.StmtCtx)
+	if !se.sessionVars.InTxn() {
 		if err != nil {
 			log.Info("RollbackTxn for ddl/autocommit error.")
-			ctx.RollbackTxn()
+			err1 := se.RollbackTxn()
+			terror.Log(errors.Trace(err1))
 		} else {
-			err = ctx.CommitTxn()
+			err = se.CommitTxn()
 		}
 	}
 	return rs, errors.Trace(err)
+}
+
+// GetHistory get all stmtHistory in current txn. Exported only for test.
+func GetHistory(ctx context.Context) *StmtHistory {
+	hist, ok := ctx.GetSessionVars().TxnCtx.Histroy.(*StmtHistory)
+	if ok {
+		return hist
+	}
+	hist = new(StmtHistory)
+	ctx.GetSessionVars().TxnCtx.Histroy = hist
+	return hist
 }
 
 // GetRows gets all the rows from a RecordSet.
@@ -153,7 +188,7 @@ func GetRows(rs ast.RecordSet) ([][]types.Datum, error) {
 		return nil, nil
 	}
 	var rows [][]types.Datum
-	defer rs.Close()
+	defer terror.Call(rs.Close)
 	// Negative limit means no limit.
 	for {
 		row, err := rs.Next()
@@ -196,7 +231,7 @@ func RegisterLocalStore(name string, driver engine.Driver) error {
 //
 // The engine should be registered before creating storage.
 func NewStore(path string) (kv.Storage, error) {
-	return newStoreWithRetry(path, defaultMaxRetries)
+	return newStoreWithRetry(path, util.DefaultMaxRetries)
 }
 
 func newStoreWithRetry(path string, maxRetries int) (kv.Storage, error) {
@@ -212,11 +247,29 @@ func newStoreWithRetry(path string, maxRetries int) (kv.Storage, error) {
 	}
 
 	var s kv.Storage
-	util.RunWithRetry(maxRetries, retryInterval, func() (bool, error) {
+	err1 := util.RunWithRetry(maxRetries, util.RetryInterval, func() (bool, error) {
+		log.Infof("new store")
 		s, err = d.Open(path)
 		return kv.IsRetryableError(err), err
 	})
-	return s, errors.Trace(err)
+	return s, errors.Trace(err1)
+}
+
+// DialPumpClientWithRetry tries to dial to binlogSocket,
+// if any error happens, it will try to re-dial,
+// or return this error when timeout.
+func DialPumpClientWithRetry(binlogSocket string, maxRetries int, dialerOpt grpc.DialOption) (*grpc.ClientConn, error) {
+	var clientCon *grpc.ClientConn
+	err := util.RunWithRetry(maxRetries, util.RetryInterval, func() (bool, error) {
+		log.Infof("setup binlog client")
+		var err error
+		clientCon, err = grpc.Dial(binlogSocket, grpc.WithInsecure(), dialerOpt)
+		if err != nil {
+			log.Infof("error happen when setting binlog client: %s", errors.ErrorStack(err))
+		}
+		return true, errors.Trace(err)
+	})
+	return clientCon, errors.Trace(err)
 }
 
 var queryStmtTable = []string{"explain", "select", "show", "execute", "describe", "desc", "admin"}
@@ -253,6 +306,8 @@ func IsQuery(sql string) bool {
 
 func init() {
 	// Register default memory and goleveldb storage
-	RegisterLocalStore("memory", goleveldb.MemoryDriver{})
-	RegisterLocalStore("goleveldb", goleveldb.Driver{})
+	err := RegisterLocalStore("memory", goleveldb.MemoryDriver{})
+	terror.Log(errors.Trace(err))
+	err = RegisterLocalStore("goleveldb", goleveldb.Driver{})
+	terror.Log(errors.Trace(err))
 }

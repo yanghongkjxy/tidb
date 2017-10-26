@@ -22,6 +22,7 @@ import (
 	"github.com/pingcap/tidb/model"
 	"github.com/pingcap/tidb/util/testleak"
 	"github.com/pingcap/tidb/util/types"
+	goctx "golang.org/x/net/context"
 )
 
 type testCtxKeyType int
@@ -37,51 +38,60 @@ func (s *testDDLSuite) TestReorg(c *C) {
 	store := testCreateStore(c, "test_reorg")
 	defer store.Close()
 
-	d := newDDL(store, nil, nil, testLease)
-	defer d.close()
+	d := testNewDDL(goctx.Background(), nil, store, nil, nil, testLease)
+	defer d.Stop()
 
 	time.Sleep(testLease)
 
-	ctx := testNewContext(c, d)
+	ctx := testNewContext(d)
 
 	ctx.SetValue(testCtxKey, 1)
 	c.Assert(ctx.Value(testCtxKey), Equals, 1)
 	ctx.ClearValue(testCtxKey)
 
-	txn, err := ctx.GetTxn(true)
+	err := ctx.NewTxn()
 	c.Assert(err, IsNil)
-	txn.Set([]byte("a"), []byte("b"))
-	err = ctx.RollbackTxn()
-	c.Assert(err, IsNil)
-
-	txn, err = ctx.GetTxn(false)
-	c.Assert(err, IsNil)
-	txn.Set([]byte("a"), []byte("b"))
-	err = ctx.CommitTxn()
+	ctx.Txn().Set([]byte("a"), []byte("b"))
+	err = ctx.Txn().Rollback()
 	c.Assert(err, IsNil)
 
-	done := make(chan struct{})
+	err = ctx.NewTxn()
+	c.Assert(err, IsNil)
+	ctx.Txn().Set([]byte("a"), []byte("b"))
+	err = ctx.Txn().Commit()
+	c.Assert(err, IsNil)
+
+	rowCount := int64(10)
 	f := func() error {
-		time.Sleep(4 * testLease)
-		close(done)
+		d.setReorgRowCount(rowCount)
+		time.Sleep(20 * testLease)
 		return nil
 	}
-	err = d.runReorgJob(f)
+	job := &model.Job{}
+	err = d.runReorgJob(job, f)
 	c.Assert(err, NotNil)
 
-	<-done
-	err = d.runReorgJob(f)
+	// The longest to wait for 5 seconds to make sure the function of f is returned.
+	for i := 0; i < 1000; i++ {
+		time.Sleep(5 * time.Millisecond)
+		err = d.runReorgJob(job, f)
+		if err == nil {
+			c.Assert(job.RowCount, Equals, rowCount)
+			c.Assert(d.reorgRowCount, Equals, int64(0))
+			break
+		}
+	}
 	c.Assert(err, IsNil)
 
-	d.close()
-	err = d.runReorgJob(func() error {
+	d.Stop()
+	err = d.runReorgJob(job, func() error {
 		time.Sleep(4 * testLease)
 		return nil
 	})
 	c.Assert(err, NotNil)
-	d.start()
+	d.start(goctx.Background())
 
-	job := &model.Job{
+	job = &model.Job{
 		ID:       1,
 		SchemaID: 1,
 		Type:     model.ActionCreateSchema,
@@ -117,22 +127,21 @@ func (s *testDDLSuite) TestReorgOwner(c *C) {
 	store := testCreateStore(c, "test_reorg_owner")
 	defer store.Close()
 
-	d1 := newDDL(store, nil, nil, testLease)
-	defer d1.close()
+	d1 := testNewDDL(goctx.Background(), nil, store, nil, nil, testLease)
+	defer d1.Stop()
 
-	ctx := testNewContext(c, d1)
+	ctx := testNewContext(d1)
 
-	testCheckOwner(c, d1, true, ddlJobFlag)
+	testCheckOwner(c, d1, true)
 
-	d2 := newDDL(store, nil, nil, testLease)
-	defer d2.close()
+	d2 := testNewDDL(goctx.Background(), nil, store, nil, nil, testLease)
+	defer d2.Stop()
 
 	dbInfo := testSchemaInfo(c, d1, "test")
 	testCreateSchema(c, ctx, d1, dbInfo)
 
 	tblInfo := testTableInfo(c, d1, "t", 3)
 	testCreateTable(c, ctx, d1, dbInfo, tblInfo)
-
 	t := testGetTable(c, d1, dbInfo.ID, tblInfo.ID)
 
 	num := 10
@@ -141,17 +150,17 @@ func (s *testDDLSuite) TestReorgOwner(c *C) {
 		c.Assert(err, IsNil)
 	}
 
-	err := ctx.CommitTxn()
+	err := ctx.Txn().Commit()
 	c.Assert(err, IsNil)
 
-	tc := &testDDLCallback{}
+	tc := &TestDDLCallback{}
 	tc.onJobRunBefore = func(job *model.Job) {
 		if job.SchemaState == model.StateDeleteReorganization {
-			d1.close()
+			d1.Stop()
 		}
 	}
 
-	d1.setHook(tc)
+	d1.SetHook(tc)
 
 	testDropSchema(c, ctx, d1, dbInfo)
 

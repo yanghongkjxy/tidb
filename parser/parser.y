@@ -32,6 +32,7 @@ import (
 	"github.com/pingcap/tidb/ast"
 	"github.com/pingcap/tidb/model"
 	"github.com/pingcap/tidb/parser/opcode"
+	"github.com/pingcap/tidb/util/auth"
 	"github.com/pingcap/tidb/util/charset"
 	"github.com/pingcap/tidb/util/types"
 )
@@ -42,243 +43,205 @@ import (
 	offset int // offset
 	item interface{}
 	ident string
+	expr ast.ExprNode 
+	statement ast.StmtNode
 }
 
 %token	<ident>
 	/*yy:token "%c"     */	identifier      "identifier"
+	/*yy:token "_%c"    */  underscoreCS	"UNDERSCORE_CHARSET"
 	/*yy:token "\"%c\"" */	stringLit       "string literal"
-	invalid		"a special token never used by parser, used by lexer to indicate error"
-	andand		"&&"
-	oror		"||"
+	singleAtIdentifier			"identifier with single leading at"
+	doubleAtIdentifier			"identifier with double leading at"
+	invalid					"a special token never used by parser, used by lexer to indicate error"
+	hintBegin				"hintBegin is a virtual token for optimizer hint grammar"
+	hintEnd					"hintEnd is a virtual token for optimizer hint grammar"
+	andand					"&&"
+	oror					"||"
 
-	/* the following tokens belong to ReservedKeyword*/
-	add		"ADD"
-	all 		"ALL"
-	alter		"ALTER"
-	analyze		"ANALYZE"
-	and		"AND"
-	as		"AS"
-	asc		"ASC"
-	between		"BETWEEN"
-	bigIntType	"BIGINT"
-	binaryType	"BINARY"
-	blobType	"BLOB"
-	both		"BOTH"
-	charType	"CHAR"
-	by		"BY"
-	cascade		"CASCADE"
-	caseKwd		"CASE"
-	character	"CHARACTER"
-	check 		"CHECK"
-	collate 	"COLLATE"
-	column		"COLUMN"
-	constraint	"CONSTRAINT"
-	convert		"CONVERT"
-	create		"CREATE"
-	cross 		"CROSS"
-	currentDate 	"CURRENT_DATE"
-	currentTime 	"CURRENT_TIME"
-	currentTs	"CURRENT_TIMESTAMP"
-	currentUser	"CURRENT_USER"
-	database	"DATABASE"
-	databases	"DATABASES"
-	dayHour		"DAY_HOUR"
-	dayMicrosecond	"DAY_MICROSECOND"
-	dayMinute	"DAY_MINUTE"
-	daySecond 	"DAY_SECOND"
-	decimalType	"DECIMAL"
-	defaultKwd	"DEFAULT"
-	delayed		"DELAYED"
-	deleteKwd	"DELETE"
-	desc		"DESC"
-	describe	"DESCRIBE"
-	distinct	"DISTINCT"
-	div 		"DIV"
-	doubleType	"DOUBLE"
-	drop		"DROP"
-	dual 		"DUAL"
-	elseKwd		"ELSE"
-	enclosed	"ENCLOSED"
-	escaped 	"ESCAPED"
-	exists		"EXISTS"
-	explain		"EXPLAIN"
-	falseKwd	"FALSE"
-	floatType	"FLOAT"
-	forKwd		"FOR"
-	force		"FORCE"
-	foreign		"FOREIGN"
-	from		"FROM"
-	fulltext	"FULLTEXT"
-	grants		"GRANTS"
-	group		"GROUP"
-	having		"HAVING"
-	highPriority	"HIGH_PRIORITY"
-	hourMicrosecond	"HOUR_MICROSECOND"
-	hourMinute	"HOUR_MINUTE"
-	hourSecond	"HOUR_SECOND"
-	ifKwd		"IF"
-	ignore		"IGNORE"
-	in		"IN"
-	index		"INDEX"
-	infile		"INFILE"
-	inner 		"INNER"
-	integerType	"INTEGER"
-	interval	"INTERVAL"
-	into		"INTO"
-	is		"IS"
-	insert		"INSERT"
-	intType		"INT"
-	join		"JOIN"
-	key		"KEY"
-	keys		"KEYS"
-	leading		"LEADING"
-	left		"LEFT"
-	like		"LIKE"
-	limit		"LIMIT"
-	lines 		"LINES"
-	load		"LOAD"
-	localTime	"LOCALTIME"
-	localTs		"LOCALTIMESTAMP"
-	lock		"LOCK"
-	longblobType	"LONGBLOB"
-	longtextType	"LONGTEXT"
-	lowPriority	"LOW_PRIORITY"
-	mediumblobType	"MEDIUMBLOB"
-	mediumIntType	"MEDIUMINT"
-	mediumtextType	"MEDIUMTEXT"
+	/* The following tokens belong to ReservedKeyword. */
+	add			"ADD"
+	all 			"ALL"
+	alter			"ALTER"
+	analyze			"ANALYZE"
+	and			"AND"
+	as			"AS"
+	asc			"ASC"
+	between			"BETWEEN"
+	bigIntType		"BIGINT"
+	binaryType		"BINARY"
+	blobType		"BLOB"
+	both			"BOTH"
+	by			"BY"
+	cascade			"CASCADE"
+	caseKwd			"CASE"
+	change        		"CHANGE"
+	character		"CHARACTER"
+	charType		"CHAR"
+	check 			"CHECK"
+	collate 		"COLLATE"
+	column			"COLUMN"
+	constraint		"CONSTRAINT"
+	convert			"CONVERT"
+	create			"CREATE"
+	cross 			"CROSS"
+	currentDate 		"CURRENT_DATE"
+	currentTime 		"CURRENT_TIME"
+	currentTs		"CURRENT_TIMESTAMP"
+	currentUser		"CURRENT_USER"
+	database		"DATABASE"
+	databases		"DATABASES"
+	dayHour			"DAY_HOUR"
+	dayMicrosecond		"DAY_MICROSECOND"
+	dayMinute		"DAY_MINUTE"
+	daySecond 		"DAY_SECOND"
+	decimalType		"DECIMAL"
+	defaultKwd		"DEFAULT"
+	delayed			"DELAYED"
+	deleteKwd		"DELETE"
+	desc			"DESC"
+	describe		"DESCRIBE"
+	distinct		"DISTINCT"
+	distinctRow		"DISTINCTROW"
+	div 			"DIV"
+	doubleType		"DOUBLE"
+	drop			"DROP"
+	dual 			"DUAL"
+	elseKwd			"ELSE"
+	enclosed		"ENCLOSED"
+	escaped 		"ESCAPED"
+	exists			"EXISTS"
+	explain			"EXPLAIN"
+	falseKwd		"FALSE"
+	floatType		"FLOAT"
+	forKwd			"FOR"
+	force			"FORCE"
+	foreign			"FOREIGN"
+	from			"FROM"
+	fulltext		"FULLTEXT"
+	generated		"GENERATED"
+	grant			"GRANT"
+	group			"GROUP"
+	having			"HAVING"
+	highPriority		"HIGH_PRIORITY"
+	hourMicrosecond		"HOUR_MICROSECOND"
+	hourMinute		"HOUR_MINUTE"
+	hourSecond		"HOUR_SECOND"
+	ifKwd			"IF"
+	ignore			"IGNORE"
+	in			"IN"
+	index			"INDEX"
+	infile			"INFILE"
+	inner 			"INNER"
+	integerType		"INTEGER"
+	interval		"INTERVAL"
+	into			"INTO"
+	is			"IS"
+	insert			"INSERT"
+	intType			"INT"
+	int1Type		"INT1"
+	int2Type		"INT2"
+	int3Type		"INT3"
+	int4Type		"INT4"
+	int8Type		"INT8"
+	join			"JOIN"
+	key			"KEY"
+	keys			"KEYS"
+	kill			"KILL"
+	leading			"LEADING"
+	left			"LEFT"
+	like			"LIKE"
+	limit			"LIMIT"
+	lines 			"LINES"
+	load			"LOAD"
+	localTime		"LOCALTIME"
+	localTs			"LOCALTIMESTAMP"
+	lock			"LOCK"
+	longblobType		"LONGBLOB"
+	longtextType		"LONGTEXT"
+	lowPriority		"LOW_PRIORITY"
+	maxValue		"MAXVALUE"
+	mediumblobType		"MEDIUMBLOB"
+	mediumIntType		"MEDIUMINT"
+	mediumtextType		"MEDIUMTEXT"
 	minuteMicrosecond	"MINUTE_MICROSECOND"
 	minuteSecond 		"MINUTE_SECOND"
-	mod 		"MOD"
-	not		"NOT"
-	noWriteToBinLog "NO_WRITE_TO_BINLOG"
-	null		"NULL"
-	numericType	"NUMERIC"
-	on		"ON"
-	option		"OPTION"
-	or		"OR"
-	order		"ORDER"
-	outer		"OUTER"
-	precisionType	"PRECISION"
-	primary		"PRIMARY"
-	procedure	"PROCEDURE"
-	read		"READ"
-	realType	"REAL"
-	references	"REFERENCES"
-	regexpKwd	"REGEXP"
-	repeat		"REPEAT"
-	replace		"REPLACE"
-	restrict	"RESTRICT"
-	right		"RIGHT"
-	rlike		"RLIKE"
-	schema		"SCHEMA"
-	schemas		"SCHEMAS"
+	mod 			"MOD"
+	not			"NOT"
+	noWriteToBinLog 	"NO_WRITE_TO_BINLOG"
+	null			"NULL"
+	numericType		"NUMERIC"
+	nvarcharType		"NVARCHAR"
+	on			"ON"
+	option			"OPTION"
+	or			"OR"
+	order			"ORDER"
+	outer			"OUTER"
+	partition		"PARTITION"
+	precisionType		"PRECISION"
+	primary			"PRIMARY"
+	procedure		"PROCEDURE"
+	rangeKwd		"RANGE"
+	read			"READ"
+	realType		"REAL"
+	references		"REFERENCES"
+	regexpKwd		"REGEXP"
+	rename         		"RENAME"
+	repeat			"REPEAT"
+	replace			"REPLACE"
+	restrict		"RESTRICT"
+	revoke			"REVOKE"
+	right			"RIGHT"
+	rlike			"RLIKE"
 	secondMicrosecond	"SECOND_MICROSECOND"
-	selectKwd	"SELECT"
-	set		"SET"
-	show		"SHOW"
-	smallIntType	"SMALLINT"
-	starting	"STARTING"
-	tableKwd	"TABLE"
-	terminated	"TERMINATED"
-	then		"THEN"
-	tinyblobType	"TINYBLOB"
-	tinyIntType	"TINYINT"
-	tinytextType	"TINYTEXT"
-	to		"TO"
-	trailing	"TRAILING"
-	trueKwd		"TRUE"
-	unique		"UNIQUE"
-	union		"UNION"
-	unlock		"UNLOCK"
-	unsigned	"UNSIGNED"
-	update		"UPDATE"
-	use		"USE"
-	using		"USING"
-	utcDate 	"UTC_DATE"
-	values		"VALUES"
-	varcharType	"VARCHAR"
-	varbinaryType	"VARBINARY"
-	when		"WHEN"
-	where		"WHERE"
-	write		"WRITE"
-	with		"WITH"
-	xor 		"XOR"
-	yearMonth	"YEAR_MONTH"
-	zerofill	"ZEROFILL"
+	selectKwd		"SELECT"
+	set			"SET"
+	show			"SHOW"
+	smallIntType		"SMALLINT"
+	sqlCalcFoundRows	"SQL_CALC_FOUND_ROWS"
+	starting		"STARTING"
+	straightJoin		"STRAIGHT_JOIN"
+	tableKwd		"TABLE"
+	stored			"STORED"
+	terminated		"TERMINATED"
+	then			"THEN"
+	tinyblobType		"TINYBLOB"
+	tinyIntType		"TINYINT"
+	tinytextType		"TINYTEXT"
+	to			"TO"
+	trailing		"TRAILING"
+	trigger			"TRIGGER"
+	trueKwd			"TRUE"
+	unique			"UNIQUE"
+	union			"UNION"
+	unlock			"UNLOCK"
+	unsigned		"UNSIGNED"
+	update			"UPDATE"
+	usage			"USAGE"
+	use			"USE"
+	using			"USING"
+	utcDate 		"UTC_DATE"
+	utcTimestamp		"UTC_TIMESTAMP"
+	utcTime			"UTC_TIME"
+	values			"VALUES"
+	varcharType		"VARCHAR"
+	varbinaryType		"VARBINARY"
+	virtual			"VIRTUAL"
+	when			"WHEN"
+	where			"WHERE"
+	write			"WRITE"
+	with			"WITH"
+	xor 			"XOR"
+	yearMonth		"YEAR_MONTH"
+	zerofill		"ZEROFILL"
+	natural			"NATURAL"
 
-	/* the following tokens belong to NotKeywordToken*/
-	abs		"ABS"
-	addDate		"ADDDATE"
-	admin		"ADMIN"
-	ceil		"CEIL"
-	ceiling		"CEILING"
-	coalesce	"COALESCE"
-	concat		"CONCAT"
-	concatWs	"CONCAT_WS"
-	connectionID 	"CONNECTION_ID"
-	curTime 	"CUR_TIME"
-	count		"COUNT"
-	day		"DAY"
-	dateAdd		"DATE_ADD"
-	dateFormat	"DATE_FORMAT"
-	dateSub		"DATE_SUB"
-	dayname		"DAYNAME"
-	dayofmonth	"DAYOFMONTH"
-	dayofweek	"DAYOFWEEK"
-	dayofyear	"DAYOFYEAR"
-	foundRows	"FOUND_ROWS"
-	fromUnixTime	"FROM_UNIXTIME"
-	grant		"GRANT"
-	groupConcat	"GROUP_CONCAT"
-	greatest	"GREATEST"
-	hour		"HOUR"
-	hex         	"HEX"
-	unhex         	"UNHEX"
-	ifNull		"IFNULL"
-	isNull		"ISNULL"
-	lastInsertID	"LAST_INSERT_ID"
-	lcase 		"LCASE"
-	length		"LENGTH"
-	locate		"LOCATE"
-	lower 		"LOWER"
-	ltrim		"LTRIM"
-	max		"MAX"
-	microsecond	"MICROSECOND"
-	min		"MIN"
-	minute		"MINUTE"
-	nullIf		"NULLIF"
-	month		"MONTH"
-	monthname	"MONTHNAME"
-	now		"NOW"
-	pow 		"POW"
-	power 		"POWER"
-	rand		"RAND"
-	second		"SECOND"
-	sleep		"SLEEP"
-	calcFoundRows	"SQL_CALC_FOUND_ROWS"
-	subDate		"SUBDATE"
-	substring	"SUBSTRING"
-	substringIndex	"SUBSTRING_INDEX"
-	sum		"SUM"
-	trim		"TRIM"
-	rtrim 		"RTRIM"
-	ucase 		"UCASE"
-	upper 		"UPPER"
-	version		"VERSION"
-	weekday		"WEEKDAY"
-	weekofyear	"WEEKOFYEAR"
-	yearweek	"YEARWEEK"
-	round		"ROUND"
-	statsPersistent	"STATS_PERSISTENT"
-	getLock		"GET_LOCK"
-	releaseLock	"RELEASE_LOCK"
-
-	/* the following tokens belong to UnReservedKeyword*/
+	/* The following tokens belong to UnReservedKeyword. */
 	action		"ACTION"
 	after		"AFTER"
+	always		"ALWAYS"
 	any 		"ANY"
 	ascii		"ASCII"
-	at		"AT"
 	autoIncrement	"AUTO_INCREMENT"
 	avgRowLength	"AVG_ROW_LENGTH"
 	avg		"AVG"
@@ -291,6 +254,8 @@ import (
 	byteType	"BYTE"
 	charsetKwd	"CHARSET"
 	checksum	"CHECKSUM"
+	client		"CLIENT"
+	coalesce	"COALESCE"
 	collation	"COLLATION"
 	columns		"COLUMNS"
 	comment 	"COMMENT"
@@ -301,6 +266,7 @@ import (
 	compression	"COMPRESSION"
 	connection 	"CONNECTION"
 	consistent	"CONSISTENT"
+	day		"DAY"
 	data 		"DATA"
 	dateType	"DATE"
 	datetimeType	"DATETIME"
@@ -314,56 +280,84 @@ import (
 	end		"END"
 	engine		"ENGINE"
 	engines		"ENGINES"
+	enum 		"ENUM"
+	events		"EVENTS"
 	escape 		"ESCAPE"
+	exclusive       "EXCLUSIVE"
 	execute		"EXECUTE"
 	fields		"FIELDS"
 	first		"FIRST"
 	fixed		"FIXED"
 	flush		"FLUSH"
+	format		"FORMAT"
 	full		"FULL"
 	function	"FUNCTION"
+	grants		"GRANTS"
 	hash		"HASH"
+	hour		"HOUR"
 	identified	"IDENTIFIED"
 	isolation	"ISOLATION"
 	indexes		"INDEXES"
+	jsonType	"JSON"
 	keyBlockSize	"KEY_BLOCK_SIZE"
 	local		"LOCAL"
+	less		"LESS"
 	level		"LEVEL"
+	microsecond	"MICROSECOND"
+	minute		"MINUTE"
 	mode		"MODE"
 	modify		"MODIFY"
+	month		"MONTH"
 	maxRows		"MAX_ROWS"
+	maxConnectionsPerHour	"MAX_CONNECTIONS_PER_HOUR"
+	maxQueriesPerHour	"MAX_QUERIES_PER_HOUR"
+	maxUpdatesPerHour	"MAX_UPDATES_PER_HOUR"
+	maxUserConnections	"MAX_USER_CONNECTIONS"
 	minRows		"MIN_ROWS"
 	names		"NAMES"
 	national	"NATIONAL"
 	no		"NO"
+	none		"NONE"
 	offset		"OFFSET"
 	only		"ONLY"
 	password	"PASSWORD"
+	partitions	"PARTITIONS"
+	plugins		"PLUGINS"
 	prepare		"PREPARE"
 	privileges	"PRIVILEGES"
+	process		"PROCESS"
 	processlist	"PROCESSLIST"
+	profiles	"PROFILES"
 	quarter		"QUARTER"
+	query		"QUERY"
 	quick		"QUICK"
 	redundant	"REDUNDANT"
 	repeatable	"REPEATABLE"
+	replication	"REPLICATION"
 	reverse		"REVERSE"
 	rollback	"ROLLBACK"
 	row 		"ROW"
+	rowCount	"ROW_COUNT"
 	rowFormat	"ROW_FORMAT"
+	second		"SECOND"
 	serializable	"SERIALIZABLE"
 	session		"SESSION"
 	share		"SHARE"
+	shared		"SHARED"
 	signed		"SIGNED"
+	slave		"SLAVE"
 	snapshot	"SNAPSHOT"
-	space 		"SPACE"
 	sqlCache	"SQL_CACHE"
 	sqlNoCache	"SQL_NO_CACHE"
 	start		"START"
+	statsPersistent	"STATS_PERSISTENT"
 	status		"STATUS"
+	super		"SUPER"
 	some 		"SOME"
 	global		"GLOBAL"
 	tables		"TABLES"
 	textType	"TEXT"
+	than		"THAN"
 	timeType	"TIME"
 	timestampType	"TIMESTAMP"
 	transaction	"TRANSACTION"
@@ -379,6 +373,41 @@ import (
 	week		"WEEK"
 	yearType	"YEAR"
 
+	/* The following tokens belong to NotKeywordToken. */
+	addDate		"ADDDATE"
+	bitXor		"BIT_XOR"
+	cast		"CAST"
+	count		"COUNT"
+	curTime		"CURTIME"
+	dateAdd		"DATE_ADD"
+	dateSub		"DATE_SUB"
+	extract		"EXTRACT"
+	getFormat	"GET_FORMAT"
+	groupConcat	"GROUP_CONCAT"
+	min		"MIN"
+	max		"MAX"
+	now		"NOW"
+	position	"POSITION"
+	subDate		"SUBDATE"
+	sum		"SUM"
+	substring	"SUBSTRING"
+	timestampAdd	"TIMESTAMPADD"
+	timestampDiff	"TIMESTAMPDIFF"
+	trim		"TRIM"
+
+	/* The following tokens belong to TiDBKeyword. */
+	admin		"ADMIN"
+	cancel		"CANCEL"
+	ddl		"DDL"
+	jobs		"JOBS"
+	stats		"STATS"
+	statsMeta       "STATS_META"
+	statsHistograms "STATS_HISTOGRAMS"
+	statsBuckets    "STATS_BUCKETS"
+	tidb		"TIDB"
+	tidbSMJ		"TIDB_SMJ"
+	tidbINLJ	"TIDB_INLJ"
+
 %token	<item>
 
 	/*yy:token "1.%d"   */	floatLit        "floating-point literal"
@@ -389,241 +418,271 @@ import (
 
 	andnot		"&^"
 	assignmentEq	":="
-	cast		"CAST"
-	curDate 	"CURDATE"
-	ddl		"DDL"
-	enum 		"ENUM"
 	eq		"="
-	extract		"EXTRACT"
-
 	ge		">="
 	le		"<="
+	jss		"->"
+	juss		"->>"
 	lsh		"<<"
 	neq		"!="
 	neqSynonym	"<>"
 	nulleq		"<=>"
-	placeholder	"PLACEHOLDER"
+	paramMarker	"?"
 	rsh		">>"
-	strcmp		"STRCMP"
-	sysVar		"SYS_VAR"
-	sysDate		"SYSDATE"
-	underscoreCS	"UNDERSCORE_CHARSET"
-	userVar		"USER_VAR"
+
+%type	<expr>
+	Expression			"expression"
+	BoolPri				"boolean primary expression"
+	ExprOrDefault			"expression or default"
+	PredicateExpr			"Predicate expression factor"
+	SetExpr				"Set variable statement value's expression"
+	BitExpr				"bit expression"
+	SimpleExpr			"simple expression"
+	SimpleIdent			"Simple Identifier expression"
+	SumExpr				"aggregate functions"
+	FunctionCallGeneric		"Function call with Identifier"
+	FunctionCallKeyword		"Function call with keyword as function name"
+	FunctionCallNonKeyword		"Function call with nonkeyword as function name"
+	Literal				"literal value"
+	Variable			"User or system variable"
+	SystemVariable			"System defined variable name"
+	UserVariable			"User defined variable name"
+	SubSelect			"Sub Select"
+	StringLiteral			"text literal"
+	ExpressionOpt			"Optional expression"
+	SignedLiteral			"Literal or NumLiteral with sign"
+	DefaultValueExpr		"DefaultValueExpr(Now or Signed Literal)"
+	NowSymOptionFraction		"NowSym with optional fraction part"
+
+%type	<statement>
+	AdminStmt			"Check table statement or show ddl statement"
+	AlterTableStmt			"Alter table statement"
+	AlterUserStmt			"Alter user statement"
+	AnalyzeTableStmt		"Analyze table statement"
+	BeginTransactionStmt		"BEGIN TRANSACTION statement"
+	BinlogStmt			"Binlog base64 statement"
+	CommitStmt			"COMMIT statement"
+	CreateTableStmt			"CREATE TABLE statement"
+	CreateUserStmt			"CREATE User statement"
+	CreateDatabaseStmt		"Create Database Statement"
+	CreateIndexStmt			"CREATE INDEX statement"
+	DoStmt				"Do statement"
+	DropDatabaseStmt		"DROP DATABASE statement"
+	DropIndexStmt			"DROP INDEX statement"
+	DropStatsStmt			"DROP STATS statement"
+	DropTableStmt			"DROP TABLE statement"
+	DropUserStmt			"DROP USER"
+	DropViewStmt			"DROP VIEW statement"
+	DeallocateStmt			"Deallocate prepared statement"
+	DeleteFromStmt			"DELETE FROM statement"
+	EmptyStmt			"empty statement"
+	ExecuteStmt			"Execute statement"
+	ExplainStmt			"EXPLAIN statement"
+	FlushStmt			"Flush statement"
+	GrantStmt			"Grant statement"
+	InsertIntoStmt			"INSERT INTO statement"
+	KillStmt			"Kill statement"
+	LoadDataStmt			"Load data statement"
+	LockTablesStmt			"Lock tables statement"
+	PreparedStmt			"PreparedStmt"
+	SelectStmt			"SELECT statement"
+	RenameTableStmt         	"rename table statement"
+	ReplaceIntoStmt			"REPLACE INTO statement"
+	RevokeStmt			"Revoke statement"
+	RollbackStmt			"ROLLBACK statement"
+	SetStmt				"Set variable statement"
+	ShowStmt			"Show engines/databases/tables/columns/warnings/status statement"
+	Statement			"statement"
+	ExplainableStmt			"explainable statement"
+	TruncateTableStmt		"TRANSACTION TABLE statement"
+	UnlockTablesStmt		"Unlock tables statement"
+	UpdateStmt			"UPDATE statement"
+	UnionStmt			"Union select state ment"
+	UseStmt				"USE statement"
 
 %type   <item>
-	AdminStmt		"Check table statement or show ddl statement"
-	AlterTableStmt		"Alter table statement"
-	AlterTableSpec		"Alter table specification"
-	AlterTableSpecList	"Alter table specification list"
-	AnalyzeTableStmt	"Analyze table statement"
-	AnyOrAll		"Any or All for subquery"
-	Assignment		"assignment"
-	AssignmentList		"assignment list"
-	AssignmentListOpt	"assignment list opt"
-	AuthOption		"User auth option"
-	AuthString		"Password string value"
-	BeginTransactionStmt	"BEGIN TRANSACTION statement"
-	BinlogStmt		"Binlog base64 statement"
-	CastType		"Cast function target type"
-	CharsetName		"Character set name"
-	ColumnDef		"table column definition"
-	ColumnName		"column name"
-	ColumnNameList		"column name list"
-	ColumnNameListOpt	"column name list opt"
-	ColumnSetValue		"insert statement set value by column name"
-	ColumnSetValueList	"insert statement set value by column name list"
-	CommitStmt		"COMMIT statement"
-	CompareOp		"Compare opcode"
-	ColumnOption		"column definition option"
-	ColumnOptionList	"column definition option list"
-	ColumnOptionListOpt	"optional column definition option list"
-	Constraint		"table constraint"
-	ConstraintElem		"table constraint element"
-	ConstraintKeywordOpt	"Constraint Keyword or empty"
-	CreateDatabaseStmt	"Create Database Statement"
-	CreateIndexStmt		"CREATE INDEX statement"
-	CreateIndexStmtUnique	"CREATE INDEX optional UNIQUE clause"
-	DatabaseOption		"CREATE Database specification"
-	DatabaseOptionList	"CREATE Database specification list"
-	DatabaseOptionListOpt	"CREATE Database specification list opt"
-	CreateTableStmt		"CREATE TABLE statement"
-	CreateUserStmt		"CREATE User statement"
-	DateArithOpt		"Date arith dateadd or datesub option"
-	DateArithMultiFormsOpt	"Date arith adddate or subdate option"
-	DateArithInterval       "Date arith interval part"
-	DBName			"Database Name"
-	DeallocateStmt		"Deallocate prepared statement"
-	Default			"DEFAULT clause"
-	DefaultOpt		"optional DEFAULT clause"
-	DefaultValueExpr	"DefaultValueExpr(Now or Signed Literal)"
-	DeleteFromStmt		"DELETE FROM statement"
-	DistinctOpt		"Distinct option"
-	DoStmt			"Do statement"
-	DropDatabaseStmt	"DROP DATABASE statement"
-	DropIndexStmt		"DROP INDEX statement"
-	DropTableStmt		"DROP TABLE statement"
-	DropUserStmt		"DROP USER"
-	DropViewStmt		"DROP VIEW statement"
-	EmptyStmt		"empty statement"
-	Enclosed		"Enclosed by"
-	EqOpt			"= or empty"
-	EscapedTableRef 	"escaped table reference"
-	Escaped			"Escaped by"
-	ExecuteStmt		"Execute statement"
-	ExplainStmt		"EXPLAIN statement"
-	Expression		"expression"
-	ExpressionList		"expression list"
-	ExpressionListOpt	"expression list opt"
-	ExpressionListList	"expression list list"
-	ExpressionListListItem	"expression list list item"
-	Factor			"expression factor"
-	PredicateExpr		"Predicate expression factor"
-	Field			"field expression"
-	Fields			"Fields clause"
-	FieldsTerminated	"Fields terminated by"
-	FieldAsName		"Field alias name"
-	FieldAsNameOpt		"Field alias name opt"
-	FieldList		"field expression list"
-	FlushStmt		"Flush statement"
-	TableRefsClause		"Table references clause"
-	Function		"function expr"
-	FunctionCallAgg		"Function call on aggregate data"
-	FunctionCallConflict	"Function call with reserved keyword as function name"
-	FunctionCallKeyword	"Function call with keyword as function name"
-	FunctionCallNonKeyword	"Function call with nonkeyword as function name"
-	FuncDatetimePrec	"Function datetime precision"
-	GlobalScope		"The scope of variable"
-	GrantStmt		"Grant statement"
-	GroupByClause		"GROUP BY clause"
-	HashString		"Hashed string"
-	HavingClause		"HAVING clause"
-	IfExists		"If Exists"
-	IfNotExists		"If Not Exists"
-	IgnoreOptional		"IGNORE or empty"
-	IndexColName		"Index column name"
-	IndexColNameList	"List of index column name"
-	IndexHint		"index hint"
-	IndexHintList		"index hint list"
-	IndexHintListOpt	"index hint list opt"
-	IndexHintScope		"index hint scope"
-	IndexHintType		"index hint type"
-	IndexName		"index name"
-	IndexNameList		"index name list"
-	IndexOption		"Index Option"
-	IndexType		"index type"
-	IndexTypeOpt		"Optional index type"
-	InsertIntoStmt		"INSERT INTO statement"
-	InsertValues		"Rest part of INSERT/REPLACE INTO statement"
-	JoinTable 		"join table"
-	JoinType		"join type"
-	LikeEscapeOpt 		"like escape option"
-	LimitClause		"LIMIT clause"
-	Lines			"Lines clause"
-	LinesTerminated		"Lines terminated by"
-	Literal			"literal value"
-	LoadDataStmt		"Load data statement"
-	LocalOpt		"Local opt"
-	LockTablesStmt		"Lock tables statement"
-	LowPriorityOptional	"LOW_PRIORITY or empty"
-	NotOpt			"optional NOT"
-	NumLiteral		"Num/Int/Float/Decimal Literal"
-	NoWriteToBinLogAliasOpt "NO_WRITE_TO_BINLOG alias LOCAL or empty"
-	ObjectType		"Grant statement object type"
-	OnDuplicateKeyUpdate	"ON DUPLICATE KEY UPDATE value list"
-	Operand			"operand"
-	OptFull			"Full or empty"
-	Order			"ORDER BY clause optional collation specification"
-	OrderBy			"ORDER BY clause"
-	ByItem			"BY item"
-	OrderByOptional		"Optional ORDER BY clause optional"
-	ByList			"BY list"
-	QuickOptional		"QUICK or empty"
-	PasswordOpt		"Password option"
-	ColumnPosition		"Column position [First|After ColumnName]"
-	PreparedStmt		"PreparedStmt"
-	PrepareSQL		"Prepare statement sql string"
-	PrimaryExpression	"primary expression"
-	PrimaryFactor		"primary expression factor"
-	Priority		"insert statement priority"
-	PrivElem		"Privilege element"
-	PrivElemList		"Privilege element list"
-	PrivLevel		"Privilege scope"
-	PrivType		"Privilege type"
-	ReferDef		"Reference definition"
-	OnDeleteOpt		"optional ON DELETE clause"
-	OnUpdateOpt		"optional ON UPDATE clause"
-	ReferOpt		"reference option"
-	ReplaceIntoStmt		"REPLACE INTO statement"
-	ReplacePriority		"replace statement priority"
-	RollbackStmt		"ROLLBACK statement"
-	RowFormat		"Row format option"
-	SelectLockOpt		"FOR UPDATE or LOCK IN SHARE MODE,"
-	SelectStmt		"SELECT statement"
-	SelectStmtCalcFoundRows	"SELECT statement optional SQL_CALC_FOUND_ROWS"
-	SelectStmtSQLCache	"SELECT statement optional SQL_CAHCE/SQL_NO_CACHE"
-	SelectStmtDistinct	"SELECT statement optional DISTINCT clause"
-	SelectStmtFieldList	"SELECT statement field list"
-	SelectStmtLimit		"SELECT statement optional LIMIT clause"
-	SelectStmtOpts		"Select statement options"
-	SelectStmtGroup		"SELECT statement optional GROUP BY clause"
-	SetStmt			"Set variable statement"
-	ShowStmt		"Show engines/databases/tables/columns/warnings/status statement"
-	ShowTargetFilterable    "Show target that can be filtered by WHERE or LIKE"
-	ShowDatabaseNameOpt	"Show tables/columns statement database name option"
-	ShowTableAliasOpt       "Show table alias option"
-	ShowLikeOrWhereOpt	"Show like or where clause option"
-	SignedLiteral		"Literal or NumLiteral with sign"
-	Starting		"Starting by"
-	Statement		"statement"
-	StatementList		"statement list"
-	StatsPersistentVal	"stats_persistent value"
-	StringName		"string literal or identifier"
-	StringList 		"string list"
-	ExplainableStmt		"explainable statement"
-	SubSelect		"Sub Select"
-	Symbol			"Constraint Symbol"
-	SystemVariable		"System defined variable name"
-	TableAsName		"table alias name"
-	TableAsNameOpt 		"table alias name optional"
-	TableElement		"table definition element"
-	TableElementList	"table definition element list"
-	TableFactor 		"table factor"
-	TableLock		"Table name and lock type"
-	TableLockList		"Table lock list"
-	TableName		"Table name"
-	TableNameList		"Table name list"
-	TableNameListOpt	"Table name list opt"
-	TableOption		"create table option"
-	TableOptionList		"create table option list"
-	TableOptionListOpt	"create table option list opt"
-	TableRef 		"table reference"
-	TableRefs 		"table references"
+	AlterTableSpec			"Alter table specification"
+	AlterTableSpecList		"Alter table specification list"
+	AnyOrAll			"Any or All for subquery"
+	Assignment			"assignment"
+	AssignmentList			"assignment list"
+	AssignmentListOpt		"assignment list opt"
+	AuthOption			"User auth option"
+	AuthString			"Password string value"
+	OptionalBraces			"optional braces"
+	CastType			"Cast function target type"
+	CharsetName			"Character set name"
+	ColumnDef			"table column definition"
+	ColumnName			"column name"
+	ColumnNameList			"column name list"
+	ColumnNameListOpt		"column name list opt"
+	ColumnNameListOptWithBrackets 	"column name list opt with brackets"
+	ColumnSetValue			"insert statement set value by column name"
+	ColumnSetValueList		"insert statement set value by column name list"
+	CompareOp			"Compare opcode"
+	ColumnOption			"column definition option"
+	ColumnOptionList		"column definition option list"
+	VirtualOrStored			"indicate generated column is stored or not"
+	ColumnOptionListOpt		"optional column definition option list"
+	Constraint			"table constraint"
+	ConstraintElem			"table constraint element"
+	ConstraintKeywordOpt		"Constraint Keyword or empty"
+	CreateIndexStmtUnique		"CREATE INDEX optional UNIQUE clause"
+	DatabaseOption			"CREATE Database specification"
+	DatabaseOptionList		"CREATE Database specification list"
+	DatabaseOptionListOpt		"CREATE Database specification list opt"
+	DBName				"Database Name"
+	DistinctOpt			"Explicit distinct option"
+	DefaultFalseDistinctOpt		"Distinct option which defaults to false"
+	DefaultTrueDistinctOpt		"Distinct option which defaults to true"
+	BuggyDefaultFalseDistinctOpt	"Distinct option which accepts DISTINCT ALL and defaults to false"
+	Enclosed			"Enclosed by"
+	EqOpt				"= or empty"
+	EscapedTableRef 		"escaped table reference"
+	Escaped				"Escaped by"
+	ExpressionList			"expression list"
+	ExpressionListOpt		"expression list opt"
+	FuncDatetimePrecListOpt	        "Function datetime precision list opt"
+	FuncDatetimePrecList	        "Function datetime precision list"
+	Field				"field expression"
+	Fields				"Fields clause"
+	FieldsTerminated		"Fields terminated by"
+	FieldAsName			"Field alias name"
+	FieldAsNameOpt			"Field alias name opt"
+	FieldList			"field expression list"
+	FlushOption			"Flush option"
+	TableRefsClause			"Table references clause"
+	FuncDatetimePrec		"Function datetime precision"
+	GlobalScope			"The scope of variable"
+	GroupByClause			"GROUP BY clause"
+	HashString			"Hashed string"
+	HavingClause			"HAVING clause"
+	IfExists			"If Exists"
+	IfNotExists			"If Not Exists"
+	IgnoreOptional			"IGNORE or empty"
+	IndexColName			"Index column name"
+	IndexColNameList		"List of index column name"
+	IndexHint			"index hint"
+	IndexHintList			"index hint list"
+	IndexHintListOpt		"index hint list opt"
+	IndexHintScope			"index hint scope"
+	IndexHintType			"index hint type"
+	IndexName			"index name"
+	IndexNameList			"index name list"
+	IndexOption			"Index Option"
+	IndexOptionList			"Index Option List or empty"
+	IndexType			"index type"
+	IndexTypeOpt			"Optional index type"
+	InsertValues			"Rest part of INSERT/REPLACE INTO statement"
+	JoinTable 			"join table"
+	JoinType			"join type"
+	KillOrKillTiDB			"Kill or Kill TiDB"
+	LikeEscapeOpt 			"like escape option"
+	LimitClause			"LIMIT clause"
+	LimitOption			"Limit option could be integer or parameter marker."
+	Lines				"Lines clause"
+	LinesTerminated			"Lines terminated by"
+	LocalOpt			"Local opt"
+	LockClause         		"Alter table lock clause"
+	LowPriorityOptional		"LOW_PRIORITY or empty"
+	NumLiteral			"Num/Int/Float/Decimal Literal"
+	NoWriteToBinLogAliasOpt 	"NO_WRITE_TO_BINLOG alias LOCAL or empty"
+	ObjectType			"Grant statement object type"
+	OnDuplicateKeyUpdate		"ON DUPLICATE KEY UPDATE value list"
+	OptFull				"Full or empty"
+	Order				"ORDER BY clause optional collation specification"
+	OrderBy				"ORDER BY clause"
+	ByItem				"BY item"
+	OrderByOptional			"Optional ORDER BY clause optional"
+	ByList				"BY list"
+	QuickOptional			"QUICK or empty"
+	PartitionDefinition		"Partition definition"
+	PartitionDefinitionList 	"Partition definition list"
+	PartitionDefinitionListOpt	"Partition definition list option"
+	PartitionOpt			"Partition option"
+	PartitionNumOpt			"PARTITION NUM option"
+	PartDefValuesOpt		"VALUES {LESS THAN {(expr | value_list) | MAXVALUE} | IN {value_list}"
+	PartDefStorageOpt		"ENGINE = xxx or empty"
+	PasswordOpt			"Password option"
+	ColumnPosition			"Column position [First|After ColumnName]"
+	PrepareSQL			"Prepare statement sql string"
+	Priority			"insert statement priority"
+	PrivElem			"Privilege element"
+	PrivElemList			"Privilege element list"
+	PrivLevel			"Privilege scope"
+	PrivType			"Privilege type"
+	ReferDef			"Reference definition"
+	OnDeleteOpt			"optional ON DELETE clause"
+	OnUpdateOpt			"optional ON UPDATE clause"
+	ReferOpt			"reference option"
+	ReplacePriority			"replace statement priority"
+	RowFormat			"Row format option"
+	RowValue			"Row value"
+	SelectLockOpt			"FOR UPDATE or LOCK IN SHARE MODE,"
+	SelectStmtCalcFoundRows		"SELECT statement optional SQL_CALC_FOUND_ROWS"
+	SelectStmtSQLCache		"SELECT statement optional SQL_CAHCE/SQL_NO_CACHE"
+	SelectStmtFieldList		"SELECT statement field list"
+	SelectStmtLimit			"SELECT statement optional LIMIT clause"
+	SelectStmtOpts			"Select statement options"
+	SelectStmtGroup			"SELECT statement optional GROUP BY clause"
+	ShowTargetFilterable    	"Show target that can be filtered by WHERE or LIKE"
+	ShowDatabaseNameOpt		"Show tables/columns statement database name option"
+	ShowTableAliasOpt       	"Show table alias option"
+	ShowLikeOrWhereOpt		"Show like or where clause option"
+	Starting			"Starting by"
+	StatementList			"statement list"
+	StatsPersistentVal		"stats_persistent value"
+	StringName			"string literal or identifier"
+	StringList 			"string list"
+	Symbol				"Constraint Symbol"
+	TableAsName			"table alias name"
+	TableAsNameOpt 			"table alias name optional"
+	TableElement			"table definition element"
+	TableElementList		"table definition element list"
+	TableFactor 			"table factor"
+	TableLock			"Table name and lock type"
+	TableLockList			"Table lock list"
+	TableName			"Table name"
+	TableNameList			"Table name list"
+	TableNameListOpt		"Table name list opt"
+	TableOption			"create table option"
+	TableOptionList			"create table option list"
+	TableOptionListOpt		"create table option list opt"
+	TableRef 			"table reference"
+	TableRefs 			"table references"
+	TableToTable 			"rename table to table"
+	TableToTableList 		"rename table to table by list"
+
+	TransactionChar		"Transaction characteristic"
+	TransactionChars	"Transaction characteristic list"
 	TrimDirection		"Trim string direction"
-	TruncateTableStmt	"TRANSACTION TABLE statement"
 	UnionOpt		"Union Option(empty/ALL/DISTINCT)"
-	UnionStmt		"Union select state ment"
 	UnionClauseList		"Union select clause list"
 	UnionSelect		"Union (select) item"
-	UnlockTablesStmt	"Unlock tables statement"
-	UpdateStmt		"UPDATE statement"
 	Username		"Username"
 	UsernameList		"UsernameList"
 	UserSpec		"Username and auth option"
 	UserSpecList		"Username and auth option list"
-	UserVariable		"User defined variable name"
 	UserVariableList	"User defined variable name list"
-	UseStmt			"USE statement"
+	Values			"values"
+	ValuesList		"values list"
+	ValuesOpt		"values optional"
 	VariableAssignment	"set variable value"
 	VariableAssignmentList	"set variable value list"
-	Variable		"User or system variable"
 	WhereClause		"WHERE clause"
-	WhereClauseOptional	"Optinal WHERE clause"
+	WhereClauseOptional	"Optional WHERE clause"
 	WhenClause		"When clause"
 	WhenClauseList		"When clause list"
 	WithReadLockOpt		"With Read Lock opt"
+	WithGrantOptionOpt	"With Grant Option opt"
 	ElseOpt			"Optional else clause"
-	ExpressionOpt		"Optional expression"
 	Type			"Types"
+
+	BetweenOrNotOp		"Between predicate"
+	IsOrNotOp		"Is predicate"
+	InOrNotOp		"In predicate"
+	LikeOrNotOp		"Like predicate"
+	RegexpOrNotOp		"Regexp predicate"
 
 	NumericType		"Numeric types"
 	IntegerType		"Integer Types types"
@@ -644,28 +703,36 @@ import (
 	OptBinary		"Optional BINARY"
 	OptCharset		"Optional Character setting"
 	OptCollate		"Optional Collate setting"
-	NUM			"numbers"
+	NUM			"A number"
+	NumList			"Some numbers"
 	LengthNum		"Field length num(uint64)"
+	HintTableList		"Table list in optimizer hint"
+	TableOptimizerHintOpt	"Table level optimizer hint"
+	TableOptimizerHints	"Table level optimizer hints"
+	TableOptimizerHintList	"Table level optimizer hint list"
 
 %type	<ident>
 	KeyOrIndex		"{KEY|INDEX}"
 	ColumnKeywordOpt	"Column keyword or empty"
 	PrimaryOpt		"Optional primary keyword"
-	NowSym			"CURRENT_TIMESTAMP/LOCALTIME/LOCALTIMESTAMP/NOW"
+	NowSym			"CURRENT_TIMESTAMP/LOCALTIME/LOCALTIMESTAMP"
+	NowSymFunc		"CURRENT_TIMESTAMP/LOCALTIME/LOCALTIMESTAMP/NOW"
 	DefaultKwdOpt		"optional DEFAULT keyword"
 	DatabaseSym		"DATABASE or SCHEMA"
 	ExplainSym		"EXPLAIN or DESCRIBE or DESC"
 	RegexpSym		"REGEXP or RLIKE"
 	IntoOpt			"INTO or EmptyString"
 	ValueSym		"Value or Values"
-	TimeUnit		"Time unit"
+	Varchar			"{NATIONAL VARCHAR|VARCHAR|NVARCHAR}"
+	TimeUnit		"Time unit for 'DATE_ADD', 'DATE_SUB', 'ADDDATE', 'SUBDATE', 'EXTRACT'"
+	TimestampUnit		"Time unit for 'TIMESTAMPADD' and 'TIMESTAMPDIFF'"
 	DeallocateSym		"Deallocate or drop"
 	OuterOpt		"optional OUTER clause"
 	CrossOpt		"Cross join option"
-	TransactionChar		"Transaction characteristic"
-	TransactionChars	"Transaction characteristic list"
+	TablesTerminalSym 	"{TABLE|TABLES}"
 	IsolationLevel		"Isolation level"
 	ShowIndexKwd		"Show index/indexs/key keyword"
+	DistinctKwd		"DISTINCT/DISTINCTROW keyword"
 	FromOrIn		"From or In"
 	OptTable		"Optional table keyword"
 	OptInteger		"Optional Integer keyword"
@@ -676,39 +743,39 @@ import (
 	logAnd			"logical and operator"
 	logOr			"logical or operator"
 	FieldsOrColumns 	"Fields or columns"
+	GetFormatSelector	"{DATE|DATETIME|TIME|TIMESTAMP}"
 
 %type	<ident>
 	Identifier			"identifier or unreserved keyword"
-	IdentifierOrReservedKeyword	"Identifier or ReservedKeyword"
 	NotKeywordToken			"Tokens not mysql keyword but treated specially"
 	UnReservedKeyword		"MySQL unreserved keywords"
-	ReservedKeyword			"MySQL reserved keywords"
-	FunctionNameConflict	"Built-in function call names which are conflict with keywords"
+	TiDBKeyword			"TiDB added keywords"
+	FunctionNameConflict		"Built-in function call names which are conflict with keywords"
+	FunctionNameOptionalBraces	"Function with optional braces, all of them are reserved keywords."
+	FunctionNameDatetimePrecision	"Function with optional datetime precision, all of them are reserved keywords."
+	FunctionNameDateArith		"Date arith function call names (date_add or date_sub)"
+	FunctionNameDateArithMultiForms	"Date arith function call names (adddate or subdate)"
 
-%precedence lowestOpt
-%token	tableRefPriority
+%precedence empty
 
-%precedence lowerThanCalcFoundRows
-%precedence calcFoundRows
-
-%precedence lowerThanSQLCache
 %precedence sqlCache sqlNoCache
-
+%precedence lowerThanIntervalKeyword
+%precedence interval
+%precedence lowerThanStringLitToken
+%precedence stringLit
 %precedence lowerThanSetKeyword
 %precedence set
-
 %precedence lowerThanInsertValues
 %precedence insertValues
-
 %precedence lowerThanKey
 %precedence key
 
-%left   join inner cross left right full
+%left   join straightJoin inner cross left right full natural
 /* A dummy token to force the priority of TableRef production in a join. */
 %left   tableRefPriority
 %precedence lowerThanOn
-%precedence on
-%right  assignmentEq
+%precedence on using
+%right   assignmentEq
 %left 	oror or
 %left 	xor
 %left 	andand and
@@ -725,23 +792,11 @@ import (
 %right 	not
 %right	collate
 
-%precedence lowerThanLeftParen
 %precedence '('
-%precedence lowerThanQuick
 %precedence quick
-%precedence lowerThanEscape
 %precedence escape
 %precedence lowerThanComma
 %precedence ','
-%precedence lowerThanWith
-%precedence with
-%precedence lowerThanInto
-%precedence into
-%precedence lowerThanIf
-%precedence ifKwd
-%precedence lowerThanIgnore
-%precedence ignore
-%precedence tableKwd
 
 %start	Start
 
@@ -774,7 +829,7 @@ AlterTableSpec:
 	{
 		$$ = &ast.AlterTableSpec{
 			Tp: 		ast.AlterTableAddColumn,
-			Column:		$3.(*ast.ColumnDef),
+			NewColumn:	$3.(*ast.ColumnDef),
 			Position:	$4.(*ast.ColumnPosition),
 		}
 	}
@@ -790,7 +845,7 @@ AlterTableSpec:
 	{
 		$$ = &ast.AlterTableSpec{
 			Tp: ast.AlterTableDropColumn,
-			DropColumn: $3.(*ast.ColumnName),
+			OldColumnName: $3.(*ast.ColumnName),
 		}
 	}
 |	"DROP" "PRIMARY" "KEY"
@@ -823,12 +878,92 @@ AlterTableSpec:
 	{
 		$$ = &ast.AlterTableSpec{
 			Tp:		ast.AlterTableModifyColumn,
-			Column:		$3.(*ast.ColumnDef),
+			NewColumn:	$3.(*ast.ColumnDef),
 			Position:	$4.(*ast.ColumnPosition),
 		}
 	}
+|	"CHANGE" ColumnKeywordOpt ColumnName ColumnDef ColumnPosition
+	{
+		$$ = &ast.AlterTableSpec{
+			Tp:    		ast.AlterTableChangeColumn,
+			OldColumnName:	$3.(*ast.ColumnName),
+			NewColumn: 	$4.(*ast.ColumnDef),
+			Position:	$5.(*ast.ColumnPosition),
+		}
+	}
+|	"ALTER" ColumnKeywordOpt ColumnName "SET" "DEFAULT" SignedLiteral
+	{
+		option := &ast.ColumnOption{Expr: $6}
+		$$ = &ast.AlterTableSpec{
+			Tp:		ast.AlterTableAlterColumn,
+			NewColumn:	&ast.ColumnDef{
+						Name: 	 $3.(*ast.ColumnName),
+						Options: []*ast.ColumnOption{option},
+			},
+		}
+	}
+|	"ALTER" ColumnKeywordOpt ColumnName "DROP" "DEFAULT"
+	{
+		$$ = &ast.AlterTableSpec{
+			Tp:		ast.AlterTableAlterColumn,
+			NewColumn:	&ast.ColumnDef{
+						Name: 	 $3.(*ast.ColumnName),
+			},
+		}
+	}
+|	"RENAME" "TO" TableName
+	{
+		$$ = &ast.AlterTableSpec{
+			Tp:    		ast.AlterTableRenameTable,
+			NewTable:      $3.(*ast.TableName),
+		}
+	}
+|	"RENAME" TableName
+	{
+		$$ = &ast.AlterTableSpec{
+			Tp:    		ast.AlterTableRenameTable,
+			NewTable:      $2.(*ast.TableName),
+		}
+	}
+|	"RENAME" "AS" TableName
+	{
+		$$ = &ast.AlterTableSpec{
+			Tp:    		ast.AlterTableRenameTable,
+			NewTable:      $3.(*ast.TableName),
+		}
+	}
+|	LockClause
+	{
+		$$ = &ast.AlterTableSpec{
+			Tp:    		ast.AlterTableLock,
+			LockType:   $1.(ast.LockType),
+		}
+	}
+
+LockClause:
+	"LOCK" eq "NONE"
+	{
+		$$ = ast.LockTypeNone
+	}
+|	"LOCK" eq "DEFAULT"
+	{
+		$$ = ast.LockTypeDefault
+	}
+|	"LOCK" eq "SHARED"
+	{
+		$$ = ast.LockTypeShared
+	}
+|	"LOCK" eq "EXCLUSIVE"
+	{
+		$$ = ast.LockTypeExclusive
+	}
 
 KeyOrIndex: "KEY" | "INDEX"
+
+
+KeyOrIndexOpt:
+	{}
+|	KeyOrIndex
 
 ColumnKeywordOpt:
 	{}
@@ -879,6 +1014,42 @@ Symbol:
 		$$ = $1
 	}
 
+/**************************************RenameTableStmt***************************************
+ * See http://dev.mysql.com/doc/refman/5.7/en/rename-table.html
+ *
+ * TODO: refactor this when you are going to add full support for multiple schema changes.
+ * Currently it is only useful for syncer which depends heavily on tidb parser to do some dirty work.
+ *******************************************************************************************/
+RenameTableStmt:
+	"RENAME" "TABLE" TableToTableList
+	{
+		$$ = &ast.RenameTableStmt{
+			OldTable: $3.([]*ast.TableToTable)[0].OldTable,
+			NewTable: $3.([]*ast.TableToTable)[0].NewTable,
+			TableToTables: $3.([]*ast.TableToTable),
+		}
+	}
+
+TableToTableList:
+	TableToTable
+	{
+		$$ = []*ast.TableToTable{$1.(*ast.TableToTable)}
+	}
+|	TableToTableList ',' TableToTable
+	{
+		$$ = append($1.([]*ast.TableToTable), $3.(*ast.TableToTable))
+	}
+
+TableToTable:
+	TableName "TO" TableName
+	{
+		$$ = &ast.TableToTable{
+			OldTable: $1.(*ast.TableName),
+			NewTable: $3.(*ast.TableName),
+		}
+	}
+
+
 /*******************************************************************************************/
 
 AnalyzeTableStmt:
@@ -886,12 +1057,16 @@ AnalyzeTableStmt:
 	 {
 		$$ = &ast.AnalyzeTableStmt{TableNames: $3.([]*ast.TableName)}
 	 }
+|   "ANALYZE" "TABLE" TableName "INDEX" IndexNameList
+    {
+        $$ = &ast.AnalyzeTableStmt{TableNames: []*ast.TableName{$3.(*ast.TableName)}, IndexNames: $5.([]model.CIStr)}
+    }
 
 /*******************************************************************************************/
 Assignment:
 	ColumnName eq Expression
 	{
-		$$ = &ast.Assignment{Column: $1.(*ast.ColumnName), Expr:$3.(ast.ExprNode)}
+		$$ = &ast.Assignment{Column: $1.(*ast.ColumnName), Expr:$3}
 	}
 
 AssignmentList:
@@ -942,11 +1117,11 @@ ColumnName:
 	{
 		$$ = &ast.ColumnName{Name: model.NewCIStr($1)}
 	}
-|	Identifier '.' IdentifierOrReservedKeyword
+|	Identifier '.' Identifier
 	{
 		$$ = &ast.ColumnName{Table: model.NewCIStr($1), Name: model.NewCIStr($3)}
 	}
-|	Identifier '.' Identifier '.' IdentifierOrReservedKeyword
+|	Identifier '.' Identifier '.' Identifier
 	{
 		$$ = &ast.ColumnName{Schema: model.NewCIStr($1), Table: model.NewCIStr($3), Name: model.NewCIStr($5)}
 	}
@@ -969,6 +1144,16 @@ ColumnNameListOpt:
 |	ColumnNameList
 	{
 		$$ = $1.([]*ast.ColumnName)
+	}
+
+ColumnNameListOptWithBrackets:
+	/* EMPTY */
+	{
+		$$ = []*ast.ColumnName{}
+	}
+|	'(' ColumnNameListOpt ')'
+	{
+		$$ = $2.([]*ast.ColumnName)
 	}
 
 CommitStmt:
@@ -1011,9 +1196,9 @@ ColumnOption:
 	}
 |	"DEFAULT" DefaultValueExpr
 	{
-		$$ = &ast.ColumnOption{Tp: ast.ColumnOptionDefaultValue, Expr: $2.(ast.ExprNode)}
+		$$ = &ast.ColumnOption{Tp: ast.ColumnOptionDefaultValue, Expr: $2}
 	}
-|	"ON" "UPDATE" NowSym
+|	"ON" "UPDATE" NowSymOptionFraction
 	{
 		nowFunc := &ast.FuncCallExpr{FnName: model.NewCIStr("CURRENT_TIMESTAMP")}
 		$$ = &ast.ColumnOption{Tp: ast.ColumnOptionOnUpdate, Expr: nowFunc}
@@ -1027,6 +1212,34 @@ ColumnOption:
 		// See https://dev.mysql.com/doc/refman/5.7/en/create-table.html
 		// The CHECK clause is parsed but ignored by all storage engines.
 		$$ = &ast.ColumnOption{}
+	}
+|	GeneratedAlways "AS" '(' Expression ')' VirtualOrStored
+	{
+		startOffset := parser.startOffset(&yyS[yypt-2])
+		endOffset := parser.endOffset(&yyS[yypt-1])
+		expr := $4
+		expr.SetText(parser.src[startOffset:endOffset])
+
+		$$ = &ast.ColumnOption{
+			Tp: ast.ColumnOptionGenerated,
+			Expr: expr,
+			Stored: $6.(bool),
+		}
+	}
+
+GeneratedAlways: | "GENERATED" "ALWAYS"
+
+VirtualOrStored:
+	{
+		$$ = false
+	}
+|	"VIRTUAL"
+	{
+		$$ = false
+	}
+|	"STORED"
+	{
+		$$ = true
 	}
 
 ColumnOptionList:
@@ -1049,24 +1262,24 @@ ColumnOptionListOpt:
 	}
 
 ConstraintElem:
-	"PRIMARY" "KEY" IndexTypeOpt '(' IndexColNameList ')' IndexOption
+	"PRIMARY" "KEY" IndexName IndexTypeOpt '(' IndexColNameList ')' IndexOptionList
 	{
 		c := &ast.Constraint{
 			Tp: ast.ConstraintPrimaryKey,
-			Keys: $5.([]*ast.IndexColName),
+			Keys: $6.([]*ast.IndexColName),
 		}
-		if $7 != nil {
-			c.Option = $7.(*ast.IndexOption)
+		if $8 != nil {
+			c.Option = $8.(*ast.IndexOption)
 		}
-		if $3 != nil {
+		if $4 != nil {
 			if c.Option == nil {
 				c.Option = &ast.IndexOption{}
 			}
-			c.Option.Tp = $3.(model.IndexType)
+			c.Option.Tp = $4.(model.IndexType)
 		}
 		$$ = c
 	}
-|	"FULLTEXT" "KEY" IndexName '(' IndexColNameList ')' IndexOption
+|	"FULLTEXT" KeyOrIndex IndexName '(' IndexColNameList ')' IndexOptionList
 	{
 		c := &ast.Constraint{
 			Tp:	ast.ConstraintFulltext,
@@ -1078,7 +1291,7 @@ ConstraintElem:
 		}
 		$$ = c
 	}
-|	"INDEX" IndexName IndexTypeOpt '(' IndexColNameList ')' IndexOption
+|	KeyOrIndex IndexName IndexTypeOpt '(' IndexColNameList ')' IndexOptionList
 	{
 		c := &ast.Constraint{
 			Tp:	ast.ConstraintIndex,
@@ -1096,64 +1309,10 @@ ConstraintElem:
 		}
 		$$ = c
 	}
-|	"KEY" IndexName IndexTypeOpt '(' IndexColNameList ')' IndexOption
-	{
-		c := &ast.Constraint{
-			Tp:	ast.ConstraintKey,
-			Keys:	$5.([]*ast.IndexColName),
-			Name:	$2.(string),
-		}
-		if $7 != nil {
-			c.Option = $7.(*ast.IndexOption)
-		}
-		if $3 != nil {
-			if c.Option == nil {
-				c.Option = &ast.IndexOption{}
-			}
-			c.Option.Tp = $3.(model.IndexType)
-		}
-		$$ = c
-	}
-|	"UNIQUE" IndexName IndexTypeOpt '(' IndexColNameList ')' IndexOption
+|	"UNIQUE" KeyOrIndexOpt IndexName IndexTypeOpt '(' IndexColNameList ')' IndexOptionList
 	{
 		c := &ast.Constraint{
 			Tp:	ast.ConstraintUniq,
-			Keys:	$5.([]*ast.IndexColName),
-			Name:	$2.(string),
-		}
-		if $7 != nil {
-			c.Option = $7.(*ast.IndexOption)
-		}
-		if $3 != nil {
-			if c.Option == nil {
-				c.Option = &ast.IndexOption{}
-			}
-			c.Option.Tp = $3.(model.IndexType)
-		}
-		$$ = c
-	}
-|	"UNIQUE" "INDEX" IndexName IndexTypeOpt '(' IndexColNameList ')' IndexOption
-	{
-		c := &ast.Constraint{
-			Tp:	ast.ConstraintUniqIndex,
-			Keys:	$6.([]*ast.IndexColName),
-			Name:	$3.(string),
-		}
-		if $8 != nil {
-			c.Option = $8.(*ast.IndexOption)
-		}
-		if $4 != nil {
-			if c.Option == nil {
-				c.Option = &ast.IndexOption{}
-			}
-			c.Option.Tp = $4.(model.IndexType)
-		}
-		$$ = c
-	}
-|	"UNIQUE" "KEY" IndexName IndexTypeOpt '(' IndexColNameList ')' IndexOption
-	{
-		c := &ast.Constraint{
-			Tp:	ast.ConstraintUniqKey,
 			Keys:	$6.([]*ast.IndexColName),
 			Name:	$3.(string),
 		}
@@ -1245,19 +1404,31 @@ ReferOpt:
  *      https://github.com/mysql/mysql-server/blob/5.7/sql/sql_yacc.yy#L6832
  */
 DefaultValueExpr:
+	NowSymOptionFraction | SignedLiteral
+
+NowSymOptionFraction:
 	NowSym
 	{
 		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr("CURRENT_TIMESTAMP")}
 	}
-|	NowSym '(' ')'
+|	NowSymFunc '(' ')'
 	{
 		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr("CURRENT_TIMESTAMP")}
 	}
-|	SignedLiteral
+|	NowSymFunc '(' NUM ')'
+	{
+		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr("CURRENT_TIMESTAMP")}
+	}
 
-// TODO: Process other three keywords
+/*
+* See https://dev.mysql.com/doc/refman/5.7/en/date-and-time-functions.html#function_localtime
+* TODO: Process other three keywords
+*/
+NowSymFunc:
+	"CURRENT_TIMESTAMP" | "LOCALTIME" | "LOCALTIMESTAMP" | "NOW"
 NowSym:
-"CURRENT_TIMESTAMP" | "LOCALTIME" | "LOCALTIMESTAMP" | "NOW"
+	"CURRENT_TIMESTAMP" | "LOCALTIME" | "LOCALTIMESTAMP"
+
 
 SignedLiteral:
 	Literal
@@ -1273,7 +1444,6 @@ SignedLiteral:
 		$$ = &ast.UnaryOperationExpr{Op: opcode.Minus, V: ast.NewValueExpr($2)}
 	}
 
-// TODO: support decimal literal
 NumLiteral:
 	intLit
 |	floatLit
@@ -1281,13 +1451,28 @@ NumLiteral:
 
 
 CreateIndexStmt:
-	"CREATE" CreateIndexStmtUnique "INDEX" Identifier "ON" TableName '(' IndexColNameList ')'
+	"CREATE" CreateIndexStmtUnique "INDEX" Identifier IndexTypeOpt "ON" TableName '(' IndexColNameList ')' IndexOptionList
 	{
+		var indexOption *ast.IndexOption
+		if $11 != nil {
+			indexOption = $11.(*ast.IndexOption)
+			if indexOption.Tp == model.IndexTypeInvalid {
+				if $5 != nil {
+					indexOption.Tp = $5.(model.IndexType)
+				}
+			}
+		} else {
+			indexOption = &ast.IndexOption{}
+			if $5 != nil {
+				indexOption.Tp = $5.(model.IndexType)
+			}
+		}
 		$$ = &ast.CreateIndexStmt{
-			Unique: $2.(bool),
-			IndexName: $4,
-                	Table: $6.(*ast.TableName),
-			IndexColNames: $8.([]*ast.IndexColName),
+			Unique:        $2.(bool),
+			IndexName:     $4,
+			Table:         $7.(*ast.TableName),
+			IndexColNames: $9.([]*ast.IndexColName),
+			IndexOption:   indexOption,
 		}
 	}
 
@@ -1308,10 +1493,7 @@ IndexColName:
 	}
 
 IndexColNameList:
-	{
-		$$ = []*ast.IndexColName{}
-	}
-|	IndexColName
+	IndexColName
 	{
 		$$ = []*ast.IndexColName{$1.(*ast.IndexColName)}
 	}
@@ -1344,9 +1526,9 @@ CreateDatabaseStmt:
 
 DBName:
 	Identifier
-  {
-    $$ = $1
-  }
+	{
+		$$ = $1
+	}
 
 DatabaseOption:
 	DefaultKwdOpt CharsetKw EqOpt CharsetName
@@ -1390,7 +1572,7 @@ DatabaseOptionList:
  *      )
  *******************************************************************/
 CreateTableStmt:
-	"CREATE" "TABLE" IfNotExists TableName '(' TableElementList ')' TableOptionListOpt
+	"CREATE" "TABLE" IfNotExists TableName '(' TableElementList ')' TableOptionListOpt PartitionOpt
 	{
 		tes := $6.([]interface {})
 		var columnDefs []*ast.ColumnDef
@@ -1415,22 +1597,63 @@ CreateTableStmt:
 			Options:        $8.([]*ast.TableOption),
 		}
 	}
-
-Default:
-	"DEFAULT" Expression
+|	"CREATE" "TABLE" IfNotExists TableName "LIKE" TableName
 	{
-		$$ = $2
+		$$ = &ast.CreateTableStmt{
+			Table:          $4.(*ast.TableName),
+			ReferTable:	$6.(*ast.TableName),
+			IfNotExists:    $3.(bool),
+		}
 	}
-
-DefaultOpt:
-	{
-		$$ = nil
-	}
-|	Default
 
 DefaultKwdOpt:
 	{}
 |	"DEFAULT"
+
+PartitionOpt:
+	{}
+|	"PARTITION" "BY" "KEY" '(' ColumnNameList ')' PartitionNumOpt PartitionDefinitionListOpt
+	{}
+|	"PARTITION" "BY" "HASH" '(' Expression ')' PartitionNumOpt PartitionDefinitionListOpt
+	{}
+|	"PARTITION" "BY" "RANGE" '(' Expression ')' PartitionNumOpt  PartitionDefinitionListOpt
+	{}
+|	"PARTITION" "BY" "RANGE" "COLUMNS" '(' ColumnNameList ')' PartitionNumOpt PartitionDefinitionListOpt
+	{}
+
+PartitionNumOpt:
+	{}
+|	"PARTITIONS" NUM
+	{}
+
+PartitionDefinitionListOpt:
+	{}
+|	'(' PartitionDefinitionList ')'
+	{}
+
+PartitionDefinitionList:
+	PartitionDefinition
+	{}
+|	PartitionDefinitionList ',' PartitionDefinition
+	{}
+
+PartitionDefinition:
+	"PARTITION" Identifier PartDefValuesOpt PartDefStorageOpt
+	{}
+
+PartDefValuesOpt:
+	{}
+|	"VALUES" "LESS" "THAN" "MAXVALUE"
+	{}
+|	"VALUES" "LESS" "THAN" '(' "MAXVALUE" ')'
+	{}
+|	"VALUES" "LESS" "THAN" '(' ExpressionList ')'
+	{}
+
+PartDefStorageOpt:
+	{}
+|	"ENGINE" eq Identifier
+	{}
 
 /******************************************************************
  * Do statement
@@ -1458,7 +1681,7 @@ DeleteFromStmt:
 			TableRefs:	&ast.TableRefsClause{TableRefs: join},
 			LowPriority:	$2.(bool),
 			Quick:		$3.(bool),
-			Ignore:		$4.(bool),
+			IgnoreErr:		$4.(bool),
 		}
 		if $7 != nil {
 			x.Where = $7.(ast.ExprNode)
@@ -1478,7 +1701,7 @@ DeleteFromStmt:
 		x := &ast.DeleteStmt{
 			LowPriority:	$2.(bool),
 			Quick:		$3.(bool),
-			Ignore:		$4.(bool),
+			IgnoreErr:		$4.(bool),
 			IsMultiTable:	true,
 			BeforeFrom:	true,
 			Tables:		&ast.DeleteTableList{Tables: $5.([]*ast.TableName)},
@@ -1495,7 +1718,7 @@ DeleteFromStmt:
 		x := &ast.DeleteStmt{
 			LowPriority:	$2.(bool),
 			Quick:		$3.(bool),
-			Ignore:		$4.(bool),
+			IgnoreErr:		$4.(bool),
 			IsMultiTable:	true,
 			Tables:		&ast.DeleteTableList{Tables: $6.([]*ast.TableName)},
 			TableRefs:	&ast.TableRefsClause{TableRefs: $8.(*ast.Join)},
@@ -1507,7 +1730,7 @@ DeleteFromStmt:
 	}
 
 DatabaseSym:
-"DATABASE" | "SCHEMA"
+"DATABASE"
 
 DropDatabaseStmt:
 	"DROP" DatabaseSym IfExists DBName
@@ -1538,14 +1761,20 @@ DropViewStmt:
 	}
 
 DropUserStmt:
-    "DROP" "USER" UsernameList
-    {
-        $$ = &ast.DropUserStmt{IfExists: false, UserList: $3.([]string)}
-    }
-|   "DROP" "USER" "IF" "EXISTS" UsernameList
-    {
-        $$ = &ast.DropUserStmt{IfExists: true, UserList: $5.([]string)}
-    }
+	"DROP" "USER" UsernameList
+	{
+		$$ = &ast.DropUserStmt{IfExists: false, UserList: $3.([]*auth.UserIdentity)}
+	}
+|	"DROP" "USER" "IF" "EXISTS" UsernameList
+	{
+		$$ = &ast.DropUserStmt{IfExists: true, UserList: $5.([]*auth.UserIdentity)}
+	}
+
+DropStatsStmt:
+	"DROP" "STATS" TableName
+	{
+		$$ = &ast.DropStatsStmt{Table: $3.(*ast.TableName)}
+	}
 
 TableOrTables:
 	"TABLE"
@@ -1586,65 +1815,70 @@ ExplainStmt:
 	}
 |	ExplainSym ExplainableStmt
 	{
-		$$ = &ast.ExplainStmt{Stmt: $2.(ast.StmtNode)}
+		$$ = &ast.ExplainStmt{
+			Stmt:	$2,
+			Format: "row",
+		}
+	}
+|	ExplainSym "FORMAT" "=" stringLit ExplainableStmt
+	{
+		$$ = &ast.ExplainStmt{
+			Stmt:	$5,
+			Format: $4,
+		}
 	}
 
 LengthNum:
 	NUM
 	{
-		switch v := $1.(type) {
-		case int64:
-			$$ = uint64(v)
-		case uint64:
-			$$ = uint64(v)
-		}
+		$$ = getUint64FromNUM($1)
 	}
 
 NUM:
 	intLit
 
 Expression:
-	"USER_VAR" assignmentEq Expression %prec assignmentEq
+	singleAtIdentifier assignmentEq Expression %prec assignmentEq
 	{
-		v := $1.(string)
+		v := $1
 		v = strings.TrimPrefix(v, "@")
 		$$ = &ast.VariableExpr{
 				Name: 	  v,
 				IsGlobal: false,
 				IsSystem: false,
-				Value:	  $3.(ast.ExprNode),
+				Value:	  $3,
 		}
 	}
 |	Expression logOr Expression %prec oror
 	{
-		$$ = &ast.BinaryOperationExpr{Op: opcode.OrOr, L: $1.(ast.ExprNode), R: $3.(ast.ExprNode)}
+		$$ = &ast.BinaryOperationExpr{Op: opcode.LogicOr, L: $1, R: $3}
 	}
 |	Expression "XOR" Expression %prec xor
 	{
-		$$ = &ast.BinaryOperationExpr{Op: opcode.LogicXor, L: $1.(ast.ExprNode), R: $3.(ast.ExprNode)}
+		$$ = &ast.BinaryOperationExpr{Op: opcode.LogicXor, L: $1, R: $3}
 	}
 |	Expression logAnd Expression %prec andand
 	{
-		$$ = &ast.BinaryOperationExpr{Op: opcode.AndAnd, L: $1.(ast.ExprNode), R: $3.(ast.ExprNode)}
+		$$ = &ast.BinaryOperationExpr{Op: opcode.LogicAnd, L: $1, R: $3}
 	}
 |	"NOT" Expression %prec not
 	{
-		$$ = &ast.UnaryOperationExpr{Op: opcode.Not, V: $2.(ast.ExprNode)}
+		$$ = &ast.UnaryOperationExpr{Op: opcode.Not, V: $2}
 	}
-|	Factor "IS" NotOpt trueKwd %prec is
+|	BoolPri IsOrNotOp trueKwd %prec is
 	{
-		$$ = &ast.IsTruthExpr{Expr:$1.(ast.ExprNode), Not: $3.(bool), True: int64(1)}
+		$$ = &ast.IsTruthExpr{Expr:$1, Not: !$2.(bool), True: int64(1)}
 	}
-|	Factor "IS" NotOpt falseKwd %prec is
+|	BoolPri IsOrNotOp falseKwd %prec is
 	{
-		$$ = &ast.IsTruthExpr{Expr:$1.(ast.ExprNode), Not: $3.(bool), True: int64(0)}
+		$$ = &ast.IsTruthExpr{Expr:$1, Not: !$2.(bool), True: int64(0)}
 	}
-|	Factor "IS" NotOpt "UNKNOWN" %prec is
+|	BoolPri IsOrNotOp "UNKNOWN" %prec is
 	{
 		/* https://dev.mysql.com/doc/refman/5.7/en/comparison-operators.html#operator_is */
-		$$ = &ast.IsNullExpr{Expr: $1.(ast.ExprNode), Not: $3.(bool)}
+		$$ = &ast.IsNullExpr{Expr: $1, Not: !$2.(bool)}
 	}
-|	Factor
+|	BoolPri
 
 
 logOr:
@@ -1656,11 +1890,11 @@ logAnd:
 ExpressionList:
 	Expression
 	{
-		$$ = []ast.ExprNode{$1.(ast.ExprNode)}
+		$$ = []ast.ExprNode{$1}
 	}
 |	ExpressionList ',' Expression
 	{
-		$$ = append($1.([]ast.ExprNode), $3.(ast.ExprNode))
+		$$ = append($1.([]ast.ExprNode), $3)
 	}
 
 ExpressionListOpt:
@@ -1669,32 +1903,48 @@ ExpressionListOpt:
 	}
 |	ExpressionList
 
-Factor:
-	Factor "IS" NotOpt "NULL" %prec is
+FuncDatetimePrecListOpt:
 	{
-		$$ = &ast.IsNullExpr{Expr: $1.(ast.ExprNode), Not: $3.(bool)}
+		$$ = []ast.ExprNode{}
 	}
-|	Factor CompareOp PredicateExpr %prec eq
+|	FuncDatetimePrecList
 	{
-		$$ = &ast.BinaryOperationExpr{Op: $2.(opcode.Op), L: $1.(ast.ExprNode), R: $3.(ast.ExprNode)}
+		$$ = $1
 	}
-|	Factor CompareOp "USER_VAR" assignmentEq PredicateExpr %prec assignmentEq
+
+FuncDatetimePrecList:
+	intLit
 	{
-		v := $3.(string)
+		expr := ast.NewValueExpr($1)
+		$$ = []ast.ExprNode{expr}
+	}
+
+BoolPri:
+	BoolPri IsOrNotOp "NULL" %prec is
+	{
+		$$ = &ast.IsNullExpr{Expr: $1, Not: !$2.(bool)}
+	}
+|	BoolPri CompareOp PredicateExpr %prec eq
+	{
+		$$ = &ast.BinaryOperationExpr{Op: $2.(opcode.Op), L: $1, R: $3}
+	}
+|	BoolPri CompareOp AnyOrAll SubSelect %prec eq
+	{
+		sq := $4.(*ast.SubqueryExpr)
+		sq.MultiRows = true
+		$$ = &ast.CompareSubqueryExpr{Op: $2.(opcode.Op), L: $1, R: sq, All: $3.(bool)}
+	}
+|	BoolPri CompareOp singleAtIdentifier assignmentEq PredicateExpr %prec assignmentEq
+	{
+		v := $3
 		v = strings.TrimPrefix(v, "@")
 		variable := &ast.VariableExpr{
 				Name: 	  v,
 				IsGlobal: false,
 				IsSystem: false,
-				Value:	  $5.(ast.ExprNode),
+				Value:	  $5,
 		}
-		$$ = &ast.BinaryOperationExpr{Op: $2.(opcode.Op), L: $1.(ast.ExprNode), R: variable}
-	}
-|	Factor CompareOp AnyOrAll SubSelect %prec eq
-	{
-		sq := $4.(*ast.SubqueryExpr)
-		sq.MultiRows = true
-		$$ = &ast.CompareSubqueryExpr{Op: $2.(opcode.Op), L: $1.(ast.ExprNode), R: sq, All: $3.(bool)}
+		$$ = &ast.BinaryOperationExpr{Op: $2.(opcode.Op), L: $1, R: variable}
 	}
 |	PredicateExpr
 
@@ -1732,6 +1982,56 @@ CompareOp:
 		$$ = opcode.NullEQ
 	}
 
+BetweenOrNotOp:
+	"BETWEEN"
+	{
+		$$ = true
+	}
+|	"NOT" "BETWEEN"
+	{
+		$$ = false
+	}
+
+IsOrNotOp:
+	"IS"
+	{
+		$$ = true
+	}
+|	"IS" "NOT"
+	{
+		$$ = false
+	}
+
+InOrNotOp:
+	"IN"
+	{
+		$$ = true
+	}
+|	"NOT" "IN"
+	{
+		$$ = false
+	}
+
+LikeOrNotOp:
+	"LIKE"
+	{
+		$$ = true
+	}
+|	"NOT" "LIKE"
+	{
+		$$ = false
+	}
+
+RegexpOrNotOp:
+	RegexpSym
+	{
+		$$ = true
+	}
+|	"NOT" RegexpSym
+	{
+		$$ = false
+	}
+
 AnyOrAll:
 	"ANY"
 	{
@@ -1747,28 +2047,28 @@ AnyOrAll:
 	}
 
 PredicateExpr:
-	PrimaryFactor NotOpt "IN" '(' ExpressionList ')'
+	BitExpr InOrNotOp '(' ExpressionList ')'
 	{
-		$$ = &ast.PatternInExpr{Expr: $1.(ast.ExprNode), Not: $2.(bool), List: $5.([]ast.ExprNode)}
+		$$ = &ast.PatternInExpr{Expr: $1, Not: !$2.(bool), List: $4.([]ast.ExprNode)}
 	}
-|	PrimaryFactor NotOpt "IN" SubSelect
+|	BitExpr InOrNotOp SubSelect
 	{
-		sq := $4.(*ast.SubqueryExpr)
+		sq := $3.(*ast.SubqueryExpr)
 		sq.MultiRows = true
-		$$ = &ast.PatternInExpr{Expr: $1.(ast.ExprNode), Not: $2.(bool), Sel: sq}
+		$$ = &ast.PatternInExpr{Expr: $1, Not: !$2.(bool), Sel: sq}
 	}
-|	PrimaryFactor NotOpt "BETWEEN" PrimaryFactor "AND" PredicateExpr
+|	BitExpr BetweenOrNotOp BitExpr "AND" PredicateExpr
 	{
 		$$ = &ast.BetweenExpr{
-			Expr:	$1.(ast.ExprNode),
-			Left:	$4.(ast.ExprNode),
-			Right:	$6.(ast.ExprNode),
-			Not:	$2.(bool),
+			Expr:	$1,
+			Left:	$3,
+			Right:	$5,
+			Not:	!$2.(bool),
 		}
 	}
-|	PrimaryFactor NotOpt "LIKE" PrimaryExpression LikeEscapeOpt
+|	BitExpr LikeOrNotOp SimpleExpr LikeEscapeOpt
 	{
-		escape := $5.(string)
+		escape := $4.(string)
 		if len(escape) > 1 {
 			yylex.Errorf("Incorrect arguments %s to ESCAPE", escape)
 			return 1
@@ -1776,38 +2076,29 @@ PredicateExpr:
 			escape = "\\"
 		}
 		$$ = &ast.PatternLikeExpr{
-			Expr:		$1.(ast.ExprNode),
-			Pattern:	$4.(ast.ExprNode),
-			Not: 		$2.(bool),
+			Expr:		$1,
+			Pattern:	$3,
+			Not: 		!$2.(bool),
 			Escape: 	escape[0],
 		}
 	}
-|	PrimaryFactor NotOpt RegexpSym PrimaryExpression
+|	BitExpr RegexpOrNotOp SimpleExpr
 	{
-		$$ = &ast.PatternRegexpExpr{Expr: $1.(ast.ExprNode), Pattern: $4.(ast.ExprNode), Not: $2.(bool)}
+		$$ = &ast.PatternRegexpExpr{Expr: $1, Pattern: $3, Not: !$2.(bool)}
 	}
-|	PrimaryFactor
+|	BitExpr
 
 RegexpSym:
 "REGEXP" | "RLIKE"
 
 LikeEscapeOpt:
-	%prec lowerThanEscape
+	%prec empty
 	{
 		$$ = "\\"
 	}
 |	"ESCAPE" stringLit
 	{
 		$$ = $2
-	}
-
-NotOpt:
-	{
-		$$ = false
-	}
-|	"NOT"
-	{
-		$$ = true
 	}
 
 Field:
@@ -1827,7 +2118,7 @@ Field:
 	}
 |	Expression FieldAsNameOpt
 	{
-		expr := $1.(ast.ExprNode)
+		expr := $1
 		asName := $2.(string)
 		$$ = &ast.SelectField{Expr: expr, AsName: model.NewCIStr(asName)}
 	}
@@ -1893,11 +2184,10 @@ HavingClause:
 	}
 |	"HAVING" Expression
 	{
-		$$ = &ast.HavingClause{Expr: $2.(ast.ExprNode)}
+		$$ = &ast.HavingClause{Expr: $2}
 	}
 
 IfExists:
-	%prec lowestOpt
 	{
 		$$ = false
 	}
@@ -1907,7 +2197,6 @@ IfExists:
 	}
 
 IfNotExists:
-	%prec lowestOpt
 	{
 		$$ = false
 	}
@@ -1918,7 +2207,6 @@ IfNotExists:
 
 
 IgnoreOptional:
-	%prec lowerThanIgnore
 	{
 		$$ = false
 	}
@@ -1937,11 +2225,30 @@ IndexName:
 		$$ = $1
 	}
 
-IndexOption:
+IndexOptionList:
 	{
 		$$ = nil
 	}
-|	"KEY_BLOCK_SIZE" EqOpt LengthNum
+|	IndexOptionList IndexOption
+	{
+		// Merge the options
+		if $1 == nil {
+			$$ = $2
+		} else {
+			opt1 := $1.(*ast.IndexOption)
+			opt2 := $2.(*ast.IndexOption)
+			if len(opt2.Comment) > 0 {
+				opt1.Comment = opt2.Comment
+			} else if opt2.Tp != 0 {
+				opt1.Tp = opt2.Tp
+			}
+			$$ = opt1
+		}
+	}
+
+
+IndexOption:
+	"KEY_BLOCK_SIZE" EqOpt LengthNum
 	{
 		$$ = &ast.IndexOption{
 			// TODO bug should be fix here!
@@ -1982,56 +2289,29 @@ IndexTypeOpt:
 
 /**********************************Identifier********************************************/
 Identifier:
-identifier | UnReservedKeyword | NotKeywordToken
-
-IdentifierOrReservedKeyword:
-Identifier | ReservedKeyword
+identifier | UnReservedKeyword | NotKeywordToken | TiDBKeyword
 
 UnReservedKeyword:
- "ACTION" | "ASCII" | "AUTO_INCREMENT" | "AFTER" | "AT" | "AVG" | "BEGIN" | "BIT" | "BOOL" | "BOOLEAN" | "BTREE" | "CHARSET"
-|	"COLUMNS" | "COMMIT" | "COMPACT" | "COMPRESSED" | "CONSISTENT" | "DATA" | "DATE" | "DATETIME" | "DEALLOCATE" | "DO"
-|	"DYNAMIC"| "END" | "ENGINE" | "ENGINES" | "ESCAPE" | "EXECUTE" | "FIELDS" | "FIRST" | "FIXED" | "FULL" |"GLOBAL"
-|	"HASH" | "LOCAL" | "NAMES" | "OFFSET" | "PASSWORD" %prec lowerThanEq | "PREPARE" | "QUICK" | "REDUNDANT" | "ROLLBACK"
-|	"SESSION" | "SIGNED" | "SNAPSHOT" | "START" | "STATUS" | "TABLES" | "TEXT" | "TIME" | "TIMESTAMP" | "TRANSACTION"
-|	"TRUNCATE" | "UNKNOWN" | "VALUE" | "WARNINGS" | "YEAR" | "MODE"  | "WEEK"  | "ANY" | "SOME" | "USER" | "IDENTIFIED"
-|	"COLLATION" | "COMMENT" | "AVG_ROW_LENGTH" | "CONNECTION" | "CHECKSUM" | "COMPRESSION" | "KEY_BLOCK_SIZE" | "MAX_ROWS"
-|	"MIN_ROWS" | "NATIONAL" | "ROW" | "ROW_FORMAT" | "QUARTER" | "GRANTS" | "TRIGGERS" | "DELAY_KEY_WRITE" | "ISOLATION"
-|	"REPEATABLE" | "COMMITTED" | "UNCOMMITTED" | "ONLY" | "SERIALIZABLE" | "LEVEL" | "VARIABLES" | "SQL_CACHE" | "INDEXES" | "PROCESSLIST"
-|	"SQL_NO_CACHE" | "DISABLE"  | "ENABLE" | "REVERSE" | "SPACE" | "PRIVILEGES" | "NO" | "BINLOG" | "FUNCTION" | "VIEW" | "MODIFY"
+ "ACTION" | "ASCII" | "AUTO_INCREMENT" | "AFTER" | "ALWAYS" | "AVG" | "BEGIN" | "BIT" | "BOOL" | "BOOLEAN" | "BTREE" | "BYTE" | "CHARSET"
+| "COLUMNS" | "COMMIT" | "COMPACT" | "COMPRESSED" | "CONSISTENT" | "DATA" | "DATE" %prec lowerThanStringLitToken| "DATETIME" | "DAY" | "DEALLOCATE" | "DO" | "DUPLICATE"
+| "DYNAMIC"| "END" | "ENGINE" | "ENGINES" | "ENUM" | "ESCAPE" | "EXECUTE" | "FIELDS" | "FIRST" | "FIXED" | "FLUSH" | "FORMAT" | "FULL" |"GLOBAL"
+| "HASH" | "HOUR" | "LESS" | "LOCAL" | "NAMES" | "OFFSET" | "PASSWORD" %prec lowerThanEq | "PREPARE" | "QUICK" | "REDUNDANT"
+| "ROLLBACK" | "SESSION" | "SIGNED" | "SNAPSHOT" | "START" | "STATUS" | "TABLES" | "TEXT" | "THAN" | "TIME" %prec lowerThanStringLitToken | "TIMESTAMP" %prec lowerThanStringLitToken
+| "TRANSACTION" | "TRUNCATE" | "UNKNOWN" | "VALUE" | "WARNINGS" | "YEAR" | "MODE"  | "WEEK"  | "ANY" | "SOME" | "USER" | "IDENTIFIED"
+| "COLLATION" | "COMMENT" | "AVG_ROW_LENGTH" | "CONNECTION" | "CHECKSUM" | "COMPRESSION" | "KEY_BLOCK_SIZE" | "MAX_ROWS"
+| "MIN_ROWS" | "NATIONAL" | "ROW" | "ROW_FORMAT" | "QUARTER" | "GRANTS" | "TRIGGERS" | "DELAY_KEY_WRITE" | "ISOLATION" | "JSON"
+| "REPEATABLE" | "COMMITTED" | "UNCOMMITTED" | "ONLY" | "SERIALIZABLE" | "LEVEL" | "VARIABLES" | "SQL_CACHE" | "INDEXES" | "PROCESSLIST"
+| "SQL_NO_CACHE" | "DISABLE"  | "ENABLE" | "REVERSE" | "PRIVILEGES" | "NO" | "BINLOG" | "FUNCTION" | "VIEW" | "MODIFY" | "EVENTS" | "PARTITIONS"
+| "NONE" | "SUPER" | "EXCLUSIVE" | "STATS_PERSISTENT" | "ROW_COUNT" | "COALESCE" | "MONTH" | "PROCESS" | "PROFILES"
+| "MICROSECOND" | "MINUTE" | "PLUGINS" | "QUERY" | "SECOND" | "SHARE" | "SHARED" | "MAX_CONNECTIONS_PER_HOUR" | "MAX_QUERIES_PER_HOUR" | "MAX_UPDATES_PER_HOUR"
+| "MAX_USER_CONNECTIONS" | "REPLICATION" | "CLIENT" | "SLAVE"
 
-ReservedKeyword:
-"ADD" | "ALL" | "ALTER" | "ANALYZE" | "AND" | "AS" | "ASC" | "BETWEEN" | "BIGINT"
-| "BINARY" | "BLOB" | "BOTH" | "BY" | "CASCADE" | "CASE" | "CHARACTER" | "CHECK" | "COLLATE"
-| "COLUMN" | "CONSTRAINT" | "CONVERT" | "CREATE" | "CROSS" | "CURRENT_DATE" | "CURRENT_TIME"
-| "CURRENT_TIMESTAMP" | "CURRENT_USER" | "DATABASE" | "DATABASES" | "DAY_HOUR" | "DAY_MICROSECOND"
-| "DAY_MINUTE" | "DAY_SECOND" | "DECIMAL" | "DEFAULT" | "DELETE" | "DESC" | "DESCRIBE"
-| "DISTINCT" | "DIV" | "DOUBLE" | "DROP" | "DUAL" | "ELSE" | "ENCLOSED" | "ESCAPED"
-| "EXISTS" | "EXPLAIN" | "FALSE" | "FLOAT" | "FOR" | "FORCE" | "FOREIGN" | "FROM"
-| "FULLTEXT" | "GRANT" | "GROUP" | "HAVING" | "HOUR_MICROSECOND" | "HOUR_MINUTE"
-| "HOUR_SECOND" | "IF" | "IGNORE" | "IN" | "INDEX" | "INFILE" | "INNER" | "INSERT" | "INT" | "INTO" | "INTEGER"
-| "INTERVAL" | "IS" | "JOIN" | "KEY" | "KEYS" | "LEADING" | "LEFT" | "LIKE" | "LIMIT" | "LINES" | "LOAD"
-| "LOCALTIME" | "LOCALTIMESTAMP" | "LOCK" | "LONGBLOB" | "LONGTEXT" | "MEDIUMBLOB" | "MEDIUMINT" | "MEDIUMTEXT"
-| "MINUTE_MICROSECOND" | "MINUTE_SECOND" | "MOD" | "NOT" | "NO_WRITE_TO_BINLOG" | "NULL" | "NUMERIC"
-| "ON" | "OPTION" | "OR" | "ORDER" | "OUTER" | "PRECISION" | "PRIMARY" | "PROCEDURE" | "READ" | "REAL"
-| "REFERENCES" | "REGEXP" | "REPEAT" | "REPLACE" | "RESTRICT" | "RIGHT" | "RLIKE"
-| "SCHEMA" | "SCHEMAS" | "SECOND_MICROSECOND" | "SELECT" | "SET" | "SHOW" | "SMALLINT"
-| "STARTING" | "TABLE" | "TERMINATED" | "THEN" | "TINYBLOB" | "TINYINT" | "TINYTEXT" | "TO"
-| "TRAILING" | "TRUE" | "UNION" | "UNIQUE" | "UNLOCK" | "UNSIGNED"
-| "UPDATE" | "USE" | "USING" | "UTC_DATE" | "VALUES" | "VARBINARY" | "VARCHAR"
-| "WHEN" | "WHERE" | "WRITE" | "XOR" | "YEAR_MONTH" | "ZEROFILL"
- /*
-| "DELAYED" | "HIGH_PRIORITY" | "LOW_PRIORITY"| "WITH"
- */
-
+TiDBKeyword:
+"ADMIN" | "CANCEL" | "DDL" | "JOBS" | "STATS" | "STATS_META" | "STATS_HISTOGRAMS" | "STATS_BUCKETS" | "TIDB" | "TIDB_SMJ" | "TIDB_INLJ"
 
 NotKeywordToken:
-	"ABS" | "ADDDATE" | "ADMIN" | "COALESCE" | "CONCAT" | "CONCAT_WS" | "CONNECTION_ID" | "CUR_TIME"| "COUNT" | "DAY"
-|	"DATE_ADD" | "DATE_FORMAT" | "DATE_SUB" | "DAYNAME" | "DAYOFMONTH" | "DAYOFWEEK" | "DAYOFYEAR" | "FOUND_ROWS"
-|	"GROUP_CONCAT"| "GREATEST" | "HOUR" | "HEX" | "UNHEX" | "IFNULL" | "ISNULL" | "LAST_INSERT_ID" | "LCASE" | "LENGTH" | "LOCATE" | "LOWER" | "LTRIM"
-|	"MAX" | "MICROSECOND" | "MIN" |	"MINUTE" | "NULLIF" | "MONTH" | "MONTHNAME" | "NOW" | "POW" | "POWER" | "RAND"
-|	"SECOND" | "SLEEP" | "SQL_CALC_FOUND_ROWS" | "SUBDATE" | "SUBSTRING" %prec lowerThanLeftParen | "SUBSTRING_INDEX"
-|	"SUM" | "TRIM" | "RTRIM" | "UCASE" | "UPPER" | "VERSION" | "WEEKDAY" | "WEEKOFYEAR" | "YEARWEEK" | "ROUND"
-|	"STATS_PERSISTENT" | "GET_LOCK" | "RELEASE_LOCK" | "CEIL" | "CEILING" | "FROM_UNIXTIME"
+ "ADDDATE" | "BIT_XOR" | "CAST" | "COUNT" | "CURTIME" | "DATE_ADD" | "DATE_SUB" | "EXTRACT" | "GET_FORMAT" | "GROUP_CONCAT" | "MIN" | "MAX" | "NOW" | "POSITION"
+| "SUBDATE" | "SUBSTRING" | "SUM" | "TIMESTAMPADD" | "TIMESTAMPDIFF" | "TRIM"
 
 /************************************************************************************
  *
@@ -2043,8 +2323,8 @@ InsertIntoStmt:
 	"INSERT" Priority IgnoreOptional IntoOpt TableName InsertValues OnDuplicateKeyUpdate
 	{
 		x := $6.(*ast.InsertStmt)
-		x.Priority = $2.(int)
-		x.Ignore = $3.(bool)
+		x.Priority = $2.(mysql.PriorityEnum)
+		x.IgnoreErr = $3.(bool)
 		// Wraps many layers here so that it can be processed the same way as select statement.
 		ts := &ast.TableSource{Source: $5.(*ast.TableName)}
 		x.Table = &ast.TableRefsClause{TableRefs: &ast.Join{Left: ts}}
@@ -2055,12 +2335,11 @@ InsertIntoStmt:
 	}
 
 IntoOpt:
-	%prec lowerThanInto
 	{}
 |	"INTO"
 
 InsertValues:
-	'(' ColumnNameListOpt ')' ValueSym ExpressionListList
+	'(' ColumnNameListOpt ')' ValueSym ValuesList
 	{
 		$$ = &ast.InsertStmt{
 			Columns:   $2.([]*ast.ColumnName),
@@ -2075,7 +2354,7 @@ InsertValues:
 	{
 		$$ = &ast.InsertStmt{Columns: $2.([]*ast.ColumnName), Select: $4.(*ast.UnionStmt)}
 	}
-|	ValueSym ExpressionListList %prec insertValues
+|	ValueSym ValuesList %prec insertValues
 	{
 		$$ = &ast.InsertStmt{Lists:  $2.([][]ast.ExprNode)}
 	}
@@ -2095,20 +2374,43 @@ InsertValues:
 ValueSym:
 "VALUE" | "VALUES"
 
-ExpressionListList:
-	ExpressionListListItem
+ValuesList:
+	RowValue
 	{
 		$$ = [][]ast.ExprNode{$1.([]ast.ExprNode)}
 	}
-|	ExpressionListList ',' ExpressionListListItem
+|	ValuesList ',' RowValue
 	{
 		$$ = append($1.([][]ast.ExprNode), $3.([]ast.ExprNode))
 	}
 
-ExpressionListListItem:
-	'(' ExpressionListOpt ')'
+RowValue:
+	'(' ValuesOpt ')'
 	{
 		$$ = $2
+	}
+
+ValuesOpt:
+	{
+		$$ = []ast.ExprNode{}
+	}
+|	Values
+
+Values:
+	Values ',' ExprOrDefault
+	{
+		$$ = append($1.([]ast.ExprNode), $3)
+	}
+|	ExprOrDefault
+	{
+		$$ = []ast.ExprNode{$1}
+	}
+
+ExprOrDefault:
+	Expression
+|	"DEFAULT"
+	{
+		$$ = &ast.DefaultExpr{}
 	}
 
 ColumnSetValue:
@@ -2116,7 +2418,7 @@ ColumnSetValue:
 	{
 		$$ = &ast.Assignment{
 			Column:	$1.(*ast.ColumnName),
-			Expr:	$3.(ast.ExprNode),
+			Expr:	$3,
 		}
 	}
 
@@ -2159,7 +2461,7 @@ ReplaceIntoStmt:
 	{
 		x := $5.(*ast.InsertStmt)
 		x.IsReplace = true
-		x.Priority = $2.(int)
+		x.Priority = $2.(mysql.PriorityEnum)
 		ts := &ast.TableSource{Source: $4.(*ast.TableName)}
 		x.Table = &ast.TableRefsClause{TableRefs: &ast.Join{Left: ts}}
 		$$ = x
@@ -2167,15 +2469,15 @@ ReplaceIntoStmt:
 
 ReplacePriority:
 	{
-		$$ = ast.NoPriority
+		$$ = mysql.NoPriority
 	}
 |	"LOW_PRIORITY"
 	{
-		$$ = ast.LowPriority
+		$$ = mysql.LowPriority
 	}
 |	"DELAYED"
 	{
-		$$ = ast.DelayedPriority
+		$$ = mysql.DelayedPriority
 	}
 
 /***********************************Replace Statements END************************************/
@@ -2183,96 +2485,78 @@ ReplacePriority:
 Literal:
 	"FALSE"
 	{
-		$$ = int64(0)
+		$$ = ast.NewValueExpr(false)
 	}
 |	"NULL"
 	{
-		$$ = nil
+		$$ = ast.NewValueExpr(nil)
 	}
 |	"TRUE"
 	{
-		$$ = int64(1)
+		$$ = ast.NewValueExpr(true)
 	}
 |	floatLit
-|	decLit
-|	intLit
-|	stringLit
 	{
-		tp := types.NewFieldType(mysql.TypeString)
-		tp.Charset, tp.Collate = parser.charset, parser.collation
-		expr := ast.NewValueExpr($1)
-		expr.SetType(tp)
-		$$ = expr
+		$$ = ast.NewValueExpr($1)
+	}
+|	decLit
+	{
+		$$ = ast.NewValueExpr($1)
+	}
+|	intLit
+	{
+		$$ = ast.NewValueExpr($1)
+	}
+|	StringLiteral %prec lowerThanStringLitToken
+	{
+		$$ = $1
 	}
 |	"UNDERSCORE_CHARSET" stringLit
 	{
 		// See https://dev.mysql.com/doc/refman/5.7/en/charset-literal.html
-		tp := types.NewFieldType(mysql.TypeString)
-		tp.Charset = $1.(string)
-		co, err := charset.GetDefaultCollation(tp.Charset)
+		co, err := charset.GetDefaultCollation($1)
 		if err != nil {
-			yylex.Errorf("Get collation error for charset: %s", tp.Charset)
+			yylex.Errorf("Get collation error for charset: %s", $1)
 			return 1
 		}
-		tp.Collate = co
 		expr := ast.NewValueExpr($2)
-		expr.SetType(tp)
+		tp := expr.GetType()
+		tp.Charset = $1
+		tp.Collate = co
+		if tp.Collate == charset.CollationBin {
+			tp.Flag |= mysql.BinaryFlag
+		}
 		$$ = expr
 	}
 |	hexLit
-|	bitLit
-
-Operand:
-	Literal
 	{
 		$$ = ast.NewValueExpr($1)
 	}
-|	ColumnName
+|	bitLit
 	{
-		$$ = &ast.ColumnNameExpr{Name: $1.(*ast.ColumnName)}
+		$$ = ast.NewValueExpr($1)
 	}
-|	'(' Expression ')'
+
+StringLiteral:
+	stringLit
 	{
-		startOffset := parser.startOffset(&yyS[yypt-1])
-		endOffset := parser.endOffset(&yyS[yypt])
-		expr := $2.(ast.ExprNode)
-		expr.SetText(parser.src[startOffset:endOffset])
-		$$ = &ast.ParenthesesExpr{Expr: expr}
+		expr := ast.NewValueExpr($1)
+		$$ = expr
 	}
-|	"DEFAULT" %prec lowerThanLeftParen
+|	StringLiteral stringLit
 	{
-		$$ = &ast.DefaultExpr{}
-	}
-|	"DEFAULT" '(' ColumnName ')'
-	{
-		$$ = &ast.DefaultExpr{Name: $3.(*ast.ColumnName)}
-	}
-|	Variable
-	{
-		$$ = $1
-	}
-|	"PLACEHOLDER"
-	{
-		$$ = &ast.ParamMarkerExpr{
-			Offset: yyS[yypt].offset,
+		valExpr := $1.(*ast.ValueExpr)
+		strLit := valExpr.GetString()
+		expr := ast.NewValueExpr(strLit+$2)
+		// Fix #4239, use first string literal as projection name.
+		if valExpr.GetProjectionOffset() >= 0 {
+			expr.SetProjectionOffset(valExpr.GetProjectionOffset())
+		} else {
+			expr.SetProjectionOffset(len(strLit))
 		}
+		$$ = expr
 	}
-|	"ROW" '(' ExpressionList ',' Expression ')'
-	{
-		values := append($3.([]ast.ExprNode), $5.(ast.ExprNode))
-		$$ = &ast.RowExpr{Values: values}
-	}
-|	'(' ExpressionList ',' Expression ')'
-	{
-		values := append($2.([]ast.ExprNode), $4.(ast.ExprNode))
-		$$ = &ast.RowExpr{Values: values}
-	}
-|	"EXISTS" SubSelect
-	{
-		sq := $2.(*ast.SubqueryExpr)
-		sq.Exists = true
-		$$ = &ast.ExistsSubqueryExpr{Sel: sq}
-	}
+
 
 OrderBy:
 	"ORDER" "BY" ByList
@@ -2301,7 +2585,7 @@ ByItem:
 				expr = &ast.PositionExpr{N: int(position)}
 			}
 		}
-		$$ = &ast.ByItem{Expr: expr.(ast.ExprNode), Desc: $2.(bool)}
+		$$ = &ast.ByItem{Expr: expr, Desc: $2.(bool)}
 	}
 
 Order:
@@ -2327,278 +2611,433 @@ OrderByOptional:
 		$$ = $1
 	}
 
-PrimaryExpression:
-	Operand
-|	Function
+BitExpr:
+	BitExpr '|' BitExpr %prec '|'
+	{
+		$$ = &ast.BinaryOperationExpr{Op: opcode.Or, L: $1, R: $3}
+	}
+|	BitExpr '&' BitExpr %prec '&'
+	{
+		$$ = &ast.BinaryOperationExpr{Op: opcode.And, L: $1, R: $3}
+	}
+|	BitExpr "<<" BitExpr %prec lsh
+	{
+		$$ = &ast.BinaryOperationExpr{Op: opcode.LeftShift, L: $1, R: $3}
+	}
+|	BitExpr ">>" BitExpr %prec rsh
+	{
+		$$ = &ast.BinaryOperationExpr{Op: opcode.RightShift, L: $1, R: $3}
+	}
+|	BitExpr '+' BitExpr %prec '+'
+	{
+		$$ = &ast.BinaryOperationExpr{Op: opcode.Plus, L: $1, R: $3}
+	}
+|	BitExpr '-' BitExpr %prec '-'
+	{
+		$$ = &ast.BinaryOperationExpr{Op: opcode.Minus, L: $1, R: $3}
+	}
+|	BitExpr '+' "INTERVAL" Expression TimeUnit %prec '+'
+	{
+		$$ = &ast.FuncCallExpr{
+			FnName: model.NewCIStr("DATE_ADD"),
+			Args: []ast.ExprNode{
+				$1,
+				$4,
+				ast.NewValueExpr($5),
+			},
+		}
+	}
+|	BitExpr '-' "INTERVAL" Expression TimeUnit %prec '+'
+	{
+		$$ = &ast.FuncCallExpr{
+			FnName: model.NewCIStr("DATE_SUB"),
+			Args: []ast.ExprNode{
+				$1,
+				$4,
+				ast.NewValueExpr($5),
+			},
+		}
+	}
+|	BitExpr '*' BitExpr %prec '*'
+	{
+		$$ = &ast.BinaryOperationExpr{Op: opcode.Mul, L: $1, R: $3}
+	}
+|	BitExpr '/' BitExpr %prec '/'
+	{
+		$$ = &ast.BinaryOperationExpr{Op: opcode.Div, L: $1, R: $3}
+	}
+|	BitExpr '%' BitExpr %prec '%'
+	{
+		$$ = &ast.BinaryOperationExpr{Op: opcode.Mod, L: $1, R: $3}
+	}
+|	BitExpr "DIV" BitExpr %prec div
+	{
+		$$ = &ast.BinaryOperationExpr{Op: opcode.IntDiv, L: $1, R: $3}
+	}
+|	BitExpr "MOD" BitExpr %prec mod
+	{
+		$$ = &ast.BinaryOperationExpr{Op: opcode.Mod, L: $1, R: $3}
+	}
+|	BitExpr '^' BitExpr
+	{
+		$$ = &ast.BinaryOperationExpr{Op: opcode.Xor, L: $1, R: $3}
+	}
+|	SimpleExpr
+
+SimpleIdent:
+	Identifier
+	{
+		$$ = &ast.ColumnNameExpr{Name: &ast.ColumnName{
+			Name: model.NewCIStr($1),
+		}}
+	}
+|	Identifier '.' Identifier
+	{
+		$$ = &ast.ColumnNameExpr{Name: &ast.ColumnName{
+			Table: model.NewCIStr($1),
+			Name: model.NewCIStr($3),
+		}}
+	}
+|	'.' Identifier '.' Identifier
+	{
+		$$ = &ast.ColumnNameExpr{Name: &ast.ColumnName{
+			Table: model.NewCIStr($2),
+			Name: model.NewCIStr($4),
+		}}
+	}
+|	Identifier '.' Identifier '.' Identifier
+	{
+		$$ = &ast.ColumnNameExpr{Name: &ast.ColumnName{
+			Schema: model.NewCIStr($1),
+			Table: model.NewCIStr($3),
+			Name: model.NewCIStr($5),
+		}}
+	}
+
+SimpleExpr:
+	SimpleIdent
+|	FunctionCallKeyword
+|	FunctionCallNonKeyword
+|	FunctionCallGeneric
+|	SimpleExpr "COLLATE" StringName %prec neg
+	{
+		// TODO: Create a builtin function hold expr and collation. When do evaluation, convert expr result using the collation.
+		$$ = $1
+	}
+|	Literal
+|	paramMarker
+	{
+		$$ = &ast.ParamMarkerExpr{
+			Offset: yyS[yypt].offset,
+		}
+	}
+|	Variable
+|	SumExpr
+|	'!' SimpleExpr %prec neg
+	{
+		$$ = &ast.UnaryOperationExpr{Op: opcode.Not, V: $2}
+	}
+|	'~'  SimpleExpr %prec neg
+	{
+		$$ = &ast.UnaryOperationExpr{Op: opcode.BitNeg, V: $2}
+	}
+|	'-' SimpleExpr %prec neg
+	{
+		$$ = &ast.UnaryOperationExpr{Op: opcode.Minus, V: $2}
+	}
+|	'+' SimpleExpr %prec neg
+	{
+		$$ = &ast.UnaryOperationExpr{Op: opcode.Plus, V: $2}
+	}
 |	SubSelect
-|	'!' PrimaryExpression %prec neg
-	{
-		$$ = &ast.UnaryOperationExpr{Op: opcode.Not, V: $2.(ast.ExprNode)}
+|	'(' Expression ')' {
+		startOffset := parser.startOffset(&yyS[yypt-1])
+		endOffset := parser.endOffset(&yyS[yypt])
+		expr := $2
+		expr.SetText(parser.src[startOffset:endOffset])
+		$$ = &ast.ParenthesesExpr{Expr: expr}
 	}
-|	'~'  PrimaryExpression %prec neg
+|	'(' ExpressionList ',' Expression ')'
 	{
-		$$ = &ast.UnaryOperationExpr{Op: opcode.BitNeg, V: $2.(ast.ExprNode)}
+		values := append($2.([]ast.ExprNode), $4)
+		$$ = &ast.RowExpr{Values: values}
 	}
-|	'-' PrimaryExpression %prec neg
+|	"ROW" '(' ExpressionList ',' Expression ')'
 	{
-		$$ = &ast.UnaryOperationExpr{Op: opcode.Minus, V: $2.(ast.ExprNode)}
+		values := append($3.([]ast.ExprNode), $5)
+		$$ = &ast.RowExpr{Values: values}
 	}
-|	'+' PrimaryExpression %prec neg
+|	"EXISTS" SubSelect
 	{
-		$$ = &ast.UnaryOperationExpr{Op: opcode.Plus, V: $2.(ast.ExprNode)}
+		sq := $2.(*ast.SubqueryExpr)
+		sq.Exists = true
+		$$ = &ast.ExistsSubqueryExpr{Sel: sq}
 	}
-|	"BINARY" PrimaryExpression %prec neg
+|	"BINARY" SimpleExpr %prec neg
 	{
 		// See https://dev.mysql.com/doc/refman/5.7/en/cast-functions.html#operator_binary
 		x := types.NewFieldType(mysql.TypeString)
 		x.Charset = charset.CharsetBin
 		x.Collate = charset.CharsetBin
 		$$ = &ast.FuncCastExpr{
-			Expr: $2.(ast.ExprNode),
+			Expr: $2,
 			Tp: x,
 			FunctionType: ast.CastBinaryOperator,
 		}
 	}
-|	PrimaryExpression "COLLATE" StringName %prec neg
-	{
-		// TODO: Create a builtin function hold expr and collation. When do evaluation, convert expr result using the collation.
-		$$ = $1
-	}
-
-Function:
-	FunctionCallKeyword
-|	FunctionCallNonKeyword
-|	FunctionCallConflict
-|	FunctionCallAgg
-
-FunctionNameConflict:
-	"DATABASE"
-|	"SCHEMA"
-|	"IF"
-|	"LEFT"
-|	"REPEAT"
-|	"CURRENT_USER"
-|	"UTC_DATE"
-|	"CURRENT_DATE"
-|	"VERSION"
-
-FunctionCallConflict:
-	FunctionNameConflict '(' ExpressionListOpt ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: $3.([]ast.ExprNode)}
-	}
-|	"CURRENT_USER"
-	{
-		// See https://dev.mysql.com/doc/refman/5.7/en/information-functions.html#function_current-user
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1)}
-	}
-|	"CURRENT_DATE"
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1)}
-	}
-|	"UTC_DATE"
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1)}
-	}
-|	"MOD" '(' PrimaryFactor ',' PrimaryFactor ')'
-	{
-		$$ = &ast.BinaryOperationExpr{Op: opcode.Mod, L: $3.(ast.ExprNode), R: $5.(ast.ExprNode)}
-	}
-
-DistinctOpt:
-	{
-		$$ = false
-	}
-|	"ALL"
-	{
-		$$ = false
-	}
-|	"DISTINCT"
-	{
-		$$ = true
-	}
-|	"DISTINCT" "ALL"
-	{
-		$$ = true
-	}
-
-FunctionCallKeyword:
-	"CAST" '(' Expression "AS" CastType ')'
-	{
-		/* See https://dev.mysql.com/doc/refman/5.7/en/cast-functions.html#function_cast */
-		$$ = &ast.FuncCastExpr{
-			Expr: $3.(ast.ExprNode),
-			Tp: $5.(*types.FieldType),
-			FunctionType: ast.CastFunction,
-		}
-	}
+|	"CAST" '(' Expression "AS" CastType ')'
+ 	{
+ 		/* See https://dev.mysql.com/doc/refman/5.7/en/cast-functions.html#function_cast */
+ 		tp := $5.(*types.FieldType)
+ 		defaultFlen, defaultDecimal := mysql.GetDefaultFieldLengthAndDecimalForCast(tp.Tp)
+ 		if tp.Flen == types.UnspecifiedLength {
+ 			tp.Flen = defaultFlen
+ 		}
+ 		if tp.Decimal == types.UnspecifiedLength {
+ 			tp.Decimal = defaultDecimal
+ 		}
+ 		$$ = &ast.FuncCastExpr{
+ 			Expr: $3,
+ 			Tp: tp,
+ 			FunctionType: ast.CastFunction,
+ 		}
+ 	}
 |	"CASE" ExpressionOpt WhenClauseList ElseOpt "END"
 	{
 		x := &ast.CaseExpr{WhenClauses: $3.([]*ast.WhenClause)}
 		if $2 != nil {
-			x.Value = $2.(ast.ExprNode)
+			x.Value = $2
 		}
 		if $4 != nil {
 			x.ElseClause = $4.(ast.ExprNode)
 		}
 		$$ = x
 	}
-|	"CONVERT" '(' Expression "USING" StringName ')'
-	{
-		// See https://dev.mysql.com/doc/refman/5.7/en/cast-functions.html#function_convert
-		charset := ast.NewValueExpr($5)
-		$$ = &ast.FuncCallExpr{
-			FnName: model.NewCIStr($1),
-			Args: []ast.ExprNode{$3.(ast.ExprNode), charset},
-		}
-	}
 |	"CONVERT" '(' Expression ',' CastType ')'
 	{
 		// See https://dev.mysql.com/doc/refman/5.7/en/cast-functions.html#function_convert
+		tp := $5.(*types.FieldType)
+		defaultFlen, defaultDecimal := mysql.GetDefaultFieldLengthAndDecimalForCast(tp.Tp)
+		if tp.Flen == types.UnspecifiedLength {
+			tp.Flen = defaultFlen
+		}
+		if tp.Decimal == types.UnspecifiedLength {
+			tp.Decimal = defaultDecimal
+		}
 		$$ = &ast.FuncCastExpr{
-			Expr: $3.(ast.ExprNode),
-			Tp: $5.(*types.FieldType),
+			Expr: $3,
+			Tp: tp,
 			FunctionType: ast.CastConvertFunction,
 		}
 	}
-|	"ASCII" '(' Expression ')'
+|	"CONVERT" '(' Expression "USING" StringName ')'
 	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
+		// See https://dev.mysql.com/doc/refman/5.7/en/cast-functions.html#function_convert
+		charset1 := ast.NewValueExpr($5)
+		$$ = &ast.FuncCallExpr{
+			FnName: model.NewCIStr($1),
+			Args: []ast.ExprNode{$3, charset1},
+		}
 	}
-|	"DATE" '(' Expression ')'
+|	"DEFAULT" '(' SimpleIdent ')'
 	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
+		$$ = &ast.DefaultExpr{Name: $3.(*ast.ColumnNameExpr).Name}
 	}
-|	"USER" '(' ')'
+|	"VALUES" '(' SimpleIdent ')' %prec lowerThanInsertValues
+	{
+		$$ = &ast.ValuesExpr{Column: $3.(*ast.ColumnNameExpr)}
+	}
+|	SimpleIdent jss stringLit
+	{
+	    expr := ast.NewValueExpr($3)
+	    $$ = &ast.FuncCallExpr{FnName: model.NewCIStr(ast.JSONExtract), Args: []ast.ExprNode{$1, expr}}
+	}
+|	SimpleIdent juss stringLit
+	{
+	    expr := ast.NewValueExpr($3)
+	    extract := &ast.FuncCallExpr{FnName: model.NewCIStr(ast.JSONExtract), Args: []ast.ExprNode{$1, expr}}
+	    $$ = &ast.FuncCallExpr{FnName: model.NewCIStr(ast.JSONUnquote), Args: []ast.ExprNode{extract}}
+	}
+
+DistinctKwd:
+	"DISTINCT"
+|	"DISTINCTROW"
+
+DistinctOpt:
+	"ALL"
+	{
+		$$ = false
+	}
+|	DistinctKwd
+	{
+		$$ = true
+	}
+
+DefaultFalseDistinctOpt:
+	{
+		$$ = false
+	}
+|	DistinctOpt
+
+DefaultTrueDistinctOpt:
+	{
+		$$ = true
+	}
+|	DistinctOpt
+
+BuggyDefaultFalseDistinctOpt:
+	DefaultFalseDistinctOpt
+|	DistinctKwd "ALL"
+	{
+		$$ = true
+	}
+
+
+FunctionNameConflict:
+	"ASCII"
+|	"CHARSET"
+|	"COALESCE"
+|	"COLLATION"
+|	"DATE"
+|	"DATABASE"
+|	"DAY"
+|	"HOUR"
+|	"IF"
+|	"INTERVAL" %prec lowerThanIntervalKeyword
+|	"FORMAT"
+|	"LEFT"
+|	"MICROSECOND"
+|	"MINUTE"
+|	"MONTH"
+|	"NOW"
+|	"QUARTER"
+|	"REPEAT"
+|	"REPLACE"
+|	"REVERSE"
+|	"RIGHT"
+|	"ROW_COUNT"
+|	"SECOND"
+|	"TIME"
+|	"TIMESTAMP"
+|	"TRUNCATE"
+|	"USER"
+|	"WEEK"
+|	"YEAR"
+
+OptionalBraces:
+	{} | '(' ')' {}
+
+FunctionNameOptionalBraces:
+	"CURRENT_USER"
+|	"CURRENT_DATE"
+|	"UTC_DATE"
+
+FunctionNameDatetimePrecision:
+	"CURRENT_TIME"
+|	"CURRENT_TIMESTAMP"
+|	"LOCALTIME"
+|	"LOCALTIMESTAMP"
+|	"UTC_TIME"
+|	"UTC_TIMESTAMP"
+
+FunctionCallKeyword:
+	FunctionNameConflict '(' ExpressionListOpt ')'
+	{
+		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: $3.([]ast.ExprNode)}
+	}
+|	FunctionNameOptionalBraces OptionalBraces
 	{
 		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1)}
 	}
-|	"VALUES" '(' ColumnName ')' %prec lowerThanInsertValues
+|	FunctionNameDatetimePrecision FuncDatetimePrec
 	{
-		// TODO: support qualified identifier for column_name
-		$$ = &ast.ValuesExpr{Column: &ast.ColumnNameExpr{Name: $3.(*ast.ColumnName)}}
+		args := []ast.ExprNode{}
+		if $2 != nil {
+			args = append(args, $2.(ast.ExprNode))
+		}
+		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: args}
 	}
-|	"WEEK" '(' ExpressionList ')'
+|	"CHAR" '(' ExpressionList ')'
 	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: $3.([]ast.ExprNode)}
+		nilVal := ast.NewValueExpr(nil)
+		args := $3.([]ast.ExprNode)
+		$$ = &ast.FuncCallExpr{
+			FnName: model.NewCIStr(ast.CharFunc),
+			Args: append(args, nilVal),
+		}
 	}
-|	"YEAR" '(' Expression ')'
+|	"CHAR" '(' ExpressionList "USING" StringName ')'
 	{
-		$$ = &ast.FuncCallExpr{FnName:model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
+		charset1 := ast.NewValueExpr($5)
+		args := $3.([]ast.ExprNode)
+		$$ = &ast.FuncCallExpr{
+			FnName: model.NewCIStr(ast.CharFunc),
+			Args: append(args, charset1),
+		}
+	}
+|	"DATE"  stringLit
+	{
+		expr := ast.NewValueExpr($2)
+		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr(ast.DateLiteral), Args: []ast.ExprNode{expr}}
+	}
+|	"TIME"  stringLit
+	{
+		expr := ast.NewValueExpr($2)
+		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr(ast.TimeLiteral), Args: []ast.ExprNode{expr}}
+	}
+|	"TIMESTAMP"  stringLit
+	{
+		expr := ast.NewValueExpr($2)
+		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr(ast.TimestampLiteral), Args: []ast.ExprNode{expr}}
+	}
+|	"INSERT" '(' ExpressionListOpt ')'
+	{
+		$$ = &ast.FuncCallExpr{FnName:model.NewCIStr(ast.InsertFunc), Args: $3.([]ast.ExprNode)}
+	}
+|	"MOD" '(' BitExpr ',' BitExpr ')'
+	{
+		$$ = &ast.BinaryOperationExpr{Op: opcode.Mod, L: $3, R: $5}
+	}
+|	"PASSWORD" '(' ExpressionListOpt ')'
+	{
+		$$ = &ast.FuncCallExpr{FnName:model.NewCIStr(ast.PasswordFunc), Args: $3.([]ast.ExprNode)}
 	}
 
 FunctionCallNonKeyword:
-	"COALESCE" '(' ExpressionList ')'
+	"CURTIME" '(' FuncDatetimePrecListOpt ')'
 	{
 		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: $3.([]ast.ExprNode)}
 	}
-|	"CURDATE" '(' ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1.(string))}
-	}
-|	"CUR_TIME" '(' ExpressionOpt ')'
-	{
-		args := []ast.ExprNode{}
-		if $3 != nil {
-			args = append(args, $3.(ast.ExprNode))
-		}
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: args}
-	}
-|	"CURRENT_TIME" FuncDatetimePrec
-	{
-		args := []ast.ExprNode{}
-		if $2 != nil {
-			args = append(args, $2.(ast.ExprNode))
-		}
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: args}
-	}
-|	"CURRENT_TIMESTAMP" FuncDatetimePrec
-	{
-		args := []ast.ExprNode{}
-		if $2 != nil {
-			args = append(args, $2.(ast.ExprNode))
-		}
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: args}
-	}
-|	"ABS" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"CONCAT" '(' ExpressionList ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: $3.([]ast.ExprNode)}
-	}
-|	"CONCAT_WS" '(' ExpressionList ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: $3.([]ast.ExprNode)}
-	}
-|	"CEIL" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"CEILING" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"DAY" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"DAYNAME" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"DAYOFWEEK" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"DAYOFMONTH" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"DAYOFYEAR" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	DateArithOpt '(' Expression ',' "INTERVAL" Expression TimeUnit ')'
-	{
-		op := ast.NewValueExpr($1)
-		dateArithInterval := ast.NewValueExpr(
-			ast.DateArithInterval{
-				Unit: $7,
-				Interval: $6.(ast.ExprNode),
-			},
-		)
-
-		$$ = &ast.FuncCallExpr{
-			FnName: model.NewCIStr("DATE_ARITH"),
-			Args: []ast.ExprNode{
-				op,
-				$3.(ast.ExprNode),
-				dateArithInterval,
-			},
-		}
-	}
-|	DateArithMultiFormsOpt '(' Expression ',' DateArithInterval')'
-	{
-		op := ast.NewValueExpr($1)
-		dateArithInterval := ast.NewValueExpr($5)
-		$$ = &ast.FuncCallExpr{
-			FnName: model.NewCIStr("DATE_ARITH"),
-			Args: []ast.ExprNode{
-				op,
-				$3.(ast.ExprNode),
-				dateArithInterval,
-			},
-		}
-	}
-|	"DATE_FORMAT" '(' Expression ',' Expression ')'
+|	FunctionNameDateArithMultiForms '(' Expression ',' Expression ')'
 	{
 		$$ = &ast.FuncCallExpr{
 			FnName: model.NewCIStr($1),
-			Args:	[]ast.ExprNode{
-				$3.(ast.ExprNode),
-				$5.(ast.ExprNode),
+			Args: []ast.ExprNode{
+				$3,
+				$5,
+				ast.NewValueExpr("DAY"),
+			},
+		}
+	}
+|	FunctionNameDateArithMultiForms '(' Expression ',' "INTERVAL" Expression TimeUnit ')'
+	{
+		$$ = &ast.FuncCallExpr{
+			FnName: model.NewCIStr($1),
+			Args: []ast.ExprNode{
+				$3,
+				$6,
+				ast.NewValueExpr($7),
+			},
+		}
+	}
+|	FunctionNameDateArith '(' Expression ',' "INTERVAL" Expression TimeUnit ')'
+	{
+		$$ = &ast.FuncCallExpr{
+			FnName: model.NewCIStr($1),
+			Args: []ast.ExprNode{
+				$3,
+				$6,
+				ast.NewValueExpr($7),
 			},
 		}
 	}
@@ -2606,314 +3045,123 @@ FunctionCallNonKeyword:
 	{
 		timeUnit := ast.NewValueExpr($3)
 		$$ = &ast.FuncCallExpr{
-			FnName: model.NewCIStr($1.(string)),
-			Args: []ast.ExprNode{timeUnit, $5.(ast.ExprNode)},
+			FnName: model.NewCIStr($1),
+			Args: []ast.ExprNode{timeUnit, $5},
 		}
 	}
-|	"FOUND_ROWS" '(' ')'
-	{
-		$$ =  &ast.FuncCallExpr{FnName: model.NewCIStr($1)}
-	}
-|	"FROM_UNIXTIME" '(' Expression ')'
+|	"GET_FORMAT" '(' GetFormatSelector ','  Expression ')'
 	{
 		$$ = &ast.FuncCallExpr{
 			FnName: model.NewCIStr($1),
-			Args: []ast.ExprNode{$3.(ast.ExprNode)},
+			Args: []ast.ExprNode{ast.NewValueExpr($3), $5},
 		}
 	}
-|	"FROM_UNIXTIME" '(' Expression ',' Expression ')'
+|	"POSITION" '(' BitExpr "IN" Expression ')'
 	{
-		$$ = &ast.FuncCallExpr{
-			FnName: model.NewCIStr($1),
-			Args: []ast.ExprNode{$3.(ast.ExprNode), $5.(ast.ExprNode)},
-		}
-	}
-|	"GREATEST" '(' ExpressionList ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: $3.([]ast.ExprNode)}
-	}
-|	"HOUR" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"HEX" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"UNHEX" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-
-|	"IFNULL" '(' ExpressionList ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: $3.([]ast.ExprNode)}
-	}
-|	"ISNULL" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"LAST_INSERT_ID" '(' ExpressionOpt ')'
-	{
-		args := []ast.ExprNode{}
-		if $3 != nil {
-			args = append(args, $3.(ast.ExprNode))
-		}
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: args}
-	}
-|	"LENGTH" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"LOCATE" '(' Expression ',' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{
-			FnName: model.NewCIStr($1),
-			Args: []ast.ExprNode{$3.(ast.ExprNode), $5.(ast.ExprNode)},
-		}
-	}
-|	"LOCATE" '(' Expression ',' Expression ',' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{
-			FnName: model.NewCIStr($1),
-			Args: []ast.ExprNode{$3.(ast.ExprNode), $5.(ast.ExprNode), $7.(ast.ExprNode)},
-		}
-	}
-|	"LOWER" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"LCASE" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"LTRIM" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"MICROSECOND" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"MINUTE" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"MONTH" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"MONTHNAME" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"NOW" '(' ExpressionOpt ')'
-	{
-		args := []ast.ExprNode{}
-		if $3 != nil {
-			args = append(args, $3.(ast.ExprNode))
-		}
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: args}
-	}
-|	"NULLIF" '(' ExpressionList ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: $3.([]ast.ExprNode)}
-	}
-|	"POW" '(' Expression ',' Expression ')'
-	{
-		args := []ast.ExprNode{$3.(ast.ExprNode), $5.(ast.ExprNode)}
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: args}
-	}
-|	"POWER" '(' Expression ',' Expression ')'
-	{
-		args := []ast.ExprNode{$3.(ast.ExprNode), $5.(ast.ExprNode)}
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: args}
-	}
-|	"RAND" '(' ExpressionOpt ')'
-	{
-
-		args := []ast.ExprNode{}
-		if $3 != nil {
-			args = append(args, $3.(ast.ExprNode))
-		}
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: args}
-	}
-|	"REPLACE" '(' Expression ',' Expression ',' Expression ')'
-	{
-		args := []ast.ExprNode{$3.(ast.ExprNode), $5.(ast.ExprNode), $7.(ast.ExprNode)}
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: args}
-	}
-|	"REVERSE" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"RTRIM" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"SECOND" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"SLEEP" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"SPACE" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"STRCMP" '(' Expression ',' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1.(string)), Args: []ast.ExprNode{$3.(ast.ExprNode), $5.(ast.ExprNode)}}
+		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3, $5}}
 	}
 |	"SUBSTRING" '(' Expression ',' Expression ')'
 	{
 		$$ = &ast.FuncCallExpr{
 			FnName: model.NewCIStr($1),
-			Args: []ast.ExprNode{$3.(ast.ExprNode), $5.(ast.ExprNode)},
+			Args: []ast.ExprNode{$3, $5},
 		}
 	}
 |	"SUBSTRING" '(' Expression "FROM" Expression ')'
 	{
 		$$ = &ast.FuncCallExpr{
 			FnName: model.NewCIStr($1),
-			Args: []ast.ExprNode{$3.(ast.ExprNode), $5.(ast.ExprNode)},
+			Args: []ast.ExprNode{$3, $5},
 		}
 	}
 |	"SUBSTRING" '(' Expression ',' Expression ',' Expression ')'
 	{
 		$$ = &ast.FuncCallExpr{
 			FnName: model.NewCIStr($1),
-			Args: []ast.ExprNode{$3.(ast.ExprNode), $5.(ast.ExprNode), $7.(ast.ExprNode)},
+			Args: []ast.ExprNode{$3, $5, $7},
 		}
 	}
 |	"SUBSTRING" '(' Expression "FROM" Expression "FOR" Expression ')'
 	{
 		$$ = &ast.FuncCallExpr{
 			FnName: model.NewCIStr($1),
-			Args: []ast.ExprNode{$3.(ast.ExprNode), $5.(ast.ExprNode), $7.(ast.ExprNode)},
+			Args: []ast.ExprNode{$3, $5, $7},
 		}
 	}
-|	"SUBSTRING_INDEX" '(' Expression ',' Expression ',' Expression ')'
+|	"TIMESTAMPADD" '(' TimestampUnit ',' Expression ',' Expression ')'
 	{
 		$$ = &ast.FuncCallExpr{
 			FnName: model.NewCIStr($1),
-			Args: []ast.ExprNode{$3.(ast.ExprNode), $5.(ast.ExprNode), $7.(ast.ExprNode)},
+			Args: []ast.ExprNode{ast.NewValueExpr($3), $5, $7},
 		}
 	}
-|	"SYSDATE" '(' ExpressionOpt ')'
+|	"TIMESTAMPDIFF" '(' TimestampUnit ',' Expression ',' Expression ')'
 	{
-		args := []ast.ExprNode{}
-		if $3 != nil {
-			args = append(args, $3.(ast.ExprNode))
+		$$ = &ast.FuncCallExpr{
+			FnName: model.NewCIStr($1),
+			Args: []ast.ExprNode{ast.NewValueExpr($3), $5, $7},
 		}
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1.(string)), Args: args}
-	}
-|	"TIME" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
 	}
 |	"TRIM" '(' Expression ')'
 	{
 		$$ = &ast.FuncCallExpr{
 			FnName: model.NewCIStr($1),
-			Args: []ast.ExprNode{$3.(ast.ExprNode)},
+			Args: []ast.ExprNode{$3},
 		}
 	}
 |	"TRIM" '(' Expression "FROM" Expression ')'
 	{
 		$$ = &ast.FuncCallExpr{
 			FnName: model.NewCIStr($1),
-			Args: []ast.ExprNode{$5.(ast.ExprNode), $3.(ast.ExprNode)},
+			Args: []ast.ExprNode{$5, $3},
 		}
 	}
 |	"TRIM" '(' TrimDirection "FROM" Expression ')'
 	{
 		nilVal := ast.NewValueExpr(nil)
-		direction := ast.NewValueExpr($3)
+		direction := ast.NewValueExpr(int($3.(ast.TrimDirectionType)))
 		$$ = &ast.FuncCallExpr{
 			FnName: model.NewCIStr($1),
-			Args: []ast.ExprNode{$5.(ast.ExprNode), nilVal, direction},
+			Args: []ast.ExprNode{$5, nilVal, direction},
 		}
 	}
 |	"TRIM" '(' TrimDirection Expression "FROM" Expression ')'
 	{
-		direction := ast.NewValueExpr($3)
+		direction := ast.NewValueExpr(int($3.(ast.TrimDirectionType)))
 		$$ = &ast.FuncCallExpr{
 			FnName: model.NewCIStr($1),
-			Args: []ast.ExprNode{$6.(ast.ExprNode),$4.(ast.ExprNode), direction},
+			Args: []ast.ExprNode{$6, $4, direction},
 		}
 	}
-|	"UPPER" '(' Expression ')'
+
+GetFormatSelector:
+	"DATE"
 	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
+		$$ = strings.ToUpper($1)
 	}
-|	"UCASE" '(' Expression ')'
+| 	"DATETIME"
 	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
+		$$ = strings.ToUpper($1)
 	}
-|	"WEEKDAY" '(' Expression ')'
+|	"TIME"
 	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
+		$$ = strings.ToUpper($1)
 	}
-|	"WEEKOFYEAR" '(' Expression ')'
+|	"TIMESTAMP"
 	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
-	}
-|	"YEARWEEK" '(' ExpressionList ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: $3.([]ast.ExprNode)}
-	}
-|	"CONNECTION_ID" '(' ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1)}
-	}
-|	"ROUND" '(' ExpressionList ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: $3.([]ast.ExprNode)}
-	}
-|	"GET_LOCK" '(' Expression ',' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode), $5.(ast.ExprNode)}}
-	}
-|	"RELEASE_LOCK" '(' Expression ')'
-	{
-		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: []ast.ExprNode{$3.(ast.ExprNode)}}
+		$$ = strings.ToUpper($1)
 	}
 
-DateArithOpt:
+
+FunctionNameDateArith:
 	"DATE_ADD"
-	{
-		$$ = ast.DateAdd
-	}
 |	"DATE_SUB"
-	{
-		$$ = ast.DateSub
-	}
 
-DateArithMultiFormsOpt:
+
+FunctionNameDateArithMultiForms:
 	"ADDDATE"
-	{
-		$$ = ast.DateAdd
-	}
 |	"SUBDATE"
-	{
-		$$ = ast.DateSub
-	}
 
-DateArithInterval:
-	Expression
-	{
-		$$ = ast.DateArithInterval{
-					Unit: "day",
-					Interval: $1.(ast.ExprNode),
-		}
-	}
-|	"INTERVAL" Expression TimeUnit
-	{
-		$$ = ast.DateArithInterval{Unit: $3, Interval: $2.(ast.ExprNode)}
-	}
 
 TrimDirection:
 	"BOTH"
@@ -2929,35 +3177,53 @@ TrimDirection:
 		$$ = ast.TrimTrailing
 	}
 
-FunctionCallAgg:
-	"AVG" '(' DistinctOpt ExpressionList ')'
+SumExpr:
+	"AVG" '(' BuggyDefaultFalseDistinctOpt Expression ')'
 	{
-		$$ = &ast.AggregateFuncExpr{F: $1, Args: $4.([]ast.ExprNode), Distinct: $3.(bool)}
+		$$ = &ast.AggregateFuncExpr{F: $1, Args: []ast.ExprNode{$4}, Distinct: $3.(bool)}
 	}
-|	"COUNT" '(' DistinctOpt ExpressionList ')'
+|	"BIT_XOR" '(' Expression ')'
 	{
-		$$ = &ast.AggregateFuncExpr{F: $1, Args: $4.([]ast.ExprNode), Distinct: $3.(bool)}
+		$$ = &ast.AggregateFuncExpr{F: $1, Args: []ast.ExprNode{$3}}
 	}
-|	"COUNT" '(' DistinctOpt '*' ')'
+|	"COUNT" '(' DistinctKwd ExpressionList ')'
+	{
+		$$ = &ast.AggregateFuncExpr{F: $1, Args: $4.([]ast.ExprNode), Distinct: true}
+	}
+|	"COUNT" '(' "ALL" Expression ')'
+	{
+		$$ = &ast.AggregateFuncExpr{F: $1, Args: []ast.ExprNode{$4}}
+	}
+|	"COUNT" '(' Expression ')'
+	{
+		$$ = &ast.AggregateFuncExpr{F: $1, Args: []ast.ExprNode{$3}}
+	}
+|	"COUNT" '(' '*' ')'
 	{
 		args := []ast.ExprNode{ast.NewValueExpr(1)}
-		$$ = &ast.AggregateFuncExpr{F: $1, Args: args, Distinct: $3.(bool)}
+		$$ = &ast.AggregateFuncExpr{F: $1, Args: args}
 	}
-|	"GROUP_CONCAT" '(' DistinctOpt ExpressionList ')'
+|	"GROUP_CONCAT" '(' BuggyDefaultFalseDistinctOpt ExpressionList ')'
 	{
 		$$ = &ast.AggregateFuncExpr{F: $1, Args: $4.([]ast.ExprNode), Distinct: $3.(bool)}
 	}
-|	"MAX" '(' DistinctOpt Expression ')'
+|	"MAX" '(' BuggyDefaultFalseDistinctOpt Expression ')'
 	{
-		$$ = &ast.AggregateFuncExpr{F: $1, Args: []ast.ExprNode{$4.(ast.ExprNode)}, Distinct: $3.(bool)}
+		$$ = &ast.AggregateFuncExpr{F: $1, Args: []ast.ExprNode{$4}, Distinct: $3.(bool)}
 	}
-|	"MIN" '(' DistinctOpt Expression ')'
+|	"MIN" '(' BuggyDefaultFalseDistinctOpt Expression ')'
 	{
-		$$ = &ast.AggregateFuncExpr{F: $1, Args: []ast.ExprNode{$4.(ast.ExprNode)}, Distinct: $3.(bool)}
+		$$ = &ast.AggregateFuncExpr{F: $1, Args: []ast.ExprNode{$4}, Distinct: $3.(bool)}
 	}
-|	"SUM" '(' DistinctOpt Expression ')'
+|	"SUM" '(' BuggyDefaultFalseDistinctOpt Expression ')'
 	{
-		$$ = &ast.AggregateFuncExpr{F: $1, Args: []ast.ExprNode{$4.(ast.ExprNode)}, Distinct: $3.(bool)}
+		$$ = &ast.AggregateFuncExpr{F: $1, Args: []ast.ExprNode{$4}, Distinct: $3.(bool)}
+	}
+
+FunctionCallGeneric:
+	identifier '(' ExpressionListOpt ')'
+	{
+		$$ = &ast.FuncCallExpr{FnName: model.NewCIStr($1), Args: $3.([]ast.ExprNode)}
 	}
 
 FuncDatetimePrec:
@@ -2968,32 +3234,131 @@ FuncDatetimePrec:
 	{
 		$$ = nil
 	}
-|	'(' Expression ')'
+|	'(' intLit ')'
 	{
-		$$ = $2
+		expr := ast.NewValueExpr($2)
+		$$ = expr
 	}
 
 TimeUnit:
 	"MICROSECOND"
+	{
+		$$ = strings.ToUpper($1)
+	}
 |	"SECOND"
+	{
+		$$ = strings.ToUpper($1)
+	}
 |	"MINUTE"
+	{
+		$$ = strings.ToUpper($1)
+	}
 |	"HOUR"
+	{
+		$$ = strings.ToUpper($1)
+	}
 |	"DAY"
+	{
+		$$ = strings.ToUpper($1)
+	}
 |	"WEEK"
+	{
+		$$ = strings.ToUpper($1)
+	}
 |	"MONTH"
+	{
+		$$ = strings.ToUpper($1)
+	}
 |	"QUARTER"
+	{
+		$$ = strings.ToUpper($1)
+	}
 |	"YEAR"
+	{
+		$$ = strings.ToUpper($1)
+	}
 |	"SECOND_MICROSECOND"
+	{
+		$$ = strings.ToUpper($1)
+	}
 |	"MINUTE_MICROSECOND"
+	{
+		$$ = strings.ToUpper($1)
+	}
 |	"MINUTE_SECOND"
+	{
+		$$ = strings.ToUpper($1)
+	}
 |	"HOUR_MICROSECOND"
+	{
+		$$ = strings.ToUpper($1)
+	}
 |	"HOUR_SECOND"
+	{
+		$$ = strings.ToUpper($1)
+	}
 |	"HOUR_MINUTE"
+	{
+		$$ = strings.ToUpper($1)
+	}
 |	"DAY_MICROSECOND"
+	{
+		$$ = strings.ToUpper($1)
+	}
 |	"DAY_SECOND"
+	{
+		$$ = strings.ToUpper($1)
+	}
 |	"DAY_MINUTE"
+	{
+		$$ = strings.ToUpper($1)
+	}
 |	"DAY_HOUR"
+	{
+		$$ = strings.ToUpper($1)
+	}
 |	"YEAR_MONTH"
+	{
+		$$ = strings.ToUpper($1)
+	}
+
+TimestampUnit:
+	"MICROSECOND"
+	{
+		$$ = strings.ToUpper($1)
+	}
+|	"SECOND"
+	{
+		$$ = strings.ToUpper($1)
+	}
+|	"MINUTE"
+	{
+		$$ = strings.ToUpper($1)
+	}
+|	"HOUR"
+	{
+		$$ = strings.ToUpper($1)
+	}
+|	"DAY"
+	{
+		$$ = strings.ToUpper($1)
+	}
+|	"WEEK"
+	{
+		$$ = strings.ToUpper($1)
+	}
+|	"MONTH"
+	{
+		$$ = strings.ToUpper($1)
+	}
+|	"QUARTER"
+	{
+		$$ = strings.ToUpper($1)
+	}
+|	"YEAR"
+	{
+		$$ = strings.ToUpper($1)
+	}
 
 ExpressionOpt:
 	{
@@ -3018,8 +3383,8 @@ WhenClause:
 	"WHEN" Expression "THEN" Expression
 	{
 		$$ = &ast.WhenClause{
-			Expr: $2.(ast.ExprNode),
-			Result: $4.(ast.ExprNode),
+			Expr: $2,
+			Result: $4,
 		}
 	}
 
@@ -3036,31 +3401,46 @@ ElseOpt:
 CastType:
 	"BINARY" OptFieldLen
 	{
-		x := types.NewFieldType(mysql.TypeString)
-		x.Flen = $2.(int)
+		x := types.NewFieldType(mysql.TypeVarString)
+		x.Flen = $2.(int)  // TODO: Flen should be the flen of expression
 		x.Charset = charset.CharsetBin
-		x.Collate = charset.CharsetBin
+		x.Collate = charset.CollationBin
+		x.Flag |= mysql.BinaryFlag
 		$$ = x
 	}
 |	"CHAR" OptFieldLen OptBinary OptCharset
 	{
-		x := types.NewFieldType(mysql.TypeString)
-		x.Flen = $2.(int)
+		x := types.NewFieldType(mysql.TypeVarString)
+		x.Flen = $2.(int)  // TODO: Flen should be the flen of expression
+		x.Charset = $4.(string)
 		if $3.(bool) {
 			x.Flag |= mysql.BinaryFlag
 		}
-		x.Charset = $4.(string)
+		if x.Charset == "" {
+			x.Charset = charset.CharsetUTF8
+			x.Collate = charset.CollationUTF8
+		}
 		$$ = x
 	}
 |	"DATE"
 	{
 		x := types.NewFieldType(mysql.TypeDate)
+		x.Charset = charset.CharsetBin
+		x.Collate = charset.CollationBin
+		x.Flag |= mysql.BinaryFlag
 		$$ = x
 	}
 |	"DATETIME" OptFieldLen
 	{
 		x := types.NewFieldType(mysql.TypeDatetime)
+		x.Flen, _ = mysql.GetDefaultFieldLengthAndDecimalForCast(mysql.TypeDatetime)
 		x.Decimal = $2.(int)
+		if x.Decimal > 0 {
+			x.Flen = x.Flen + 1 + x.Decimal
+		}
+		x.Charset = charset.CharsetBin
+		x.Collate = charset.CollationBin
+		x.Flag |= mysql.BinaryFlag
 		$$ = x
 	}
 |	"DECIMAL" FloatOpt
@@ -3069,94 +3449,65 @@ CastType:
 		x := types.NewFieldType(mysql.TypeNewDecimal)
 		x.Flen = fopt.Flen
 		x.Decimal = fopt.Decimal
+		x.Charset = charset.CharsetBin
+		x.Collate = charset.CollationBin
+		x.Flag |= mysql.BinaryFlag
 		$$ = x
 	}
 |	"TIME" OptFieldLen
 	{
 		x := types.NewFieldType(mysql.TypeDuration)
+		x.Flen, _ = mysql.GetDefaultFieldLengthAndDecimalForCast(mysql.TypeDuration)
 		x.Decimal = $2.(int)
+		if x.Decimal > 0 {
+			x.Flen = x.Flen + 1 + x.Decimal
+		}
+		x.Charset = charset.CharsetBin
+		x.Collate = charset.CollationBin
+		x.Flag |= mysql.BinaryFlag
 		$$ = x
 	}
 |	"SIGNED" OptInteger
 	{
 		x := types.NewFieldType(mysql.TypeLonglong)
+		x.Charset = charset.CharsetBin
+		x.Collate = charset.CollationBin
+		x.Flag |= mysql.BinaryFlag
 		$$ = x
 	}
 |	"UNSIGNED" OptInteger
 	{
 		x := types.NewFieldType(mysql.TypeLonglong)
-		x.Flag |= mysql.UnsignedFlag
+		x.Flag |= mysql.UnsignedFlag | mysql.BinaryFlag
+		x.Charset = charset.CharsetBin
+		x.Collate = charset.CollationBin
+		$$ = x
+	}
+|	"JSON"
+	{
+		x := types.NewFieldType(mysql.TypeJSON)
+		x.Flag |= mysql.BinaryFlag | (mysql.ParseToJSONFlag)
+		x.Charset = charset.CharsetUTF8
+		x.Collate = charset.CollationUTF8
 		$$ = x
 	}
 
 
-PrimaryFactor:
-	PrimaryFactor '|' PrimaryFactor %prec '|'
-	{
-		$$ = &ast.BinaryOperationExpr{Op: opcode.Or, L: $1.(ast.ExprNode), R: $3.(ast.ExprNode)}
-	}
-|	PrimaryFactor '&' PrimaryFactor %prec '&'
-	{
-		$$ = &ast.BinaryOperationExpr{Op: opcode.And, L: $1.(ast.ExprNode), R: $3.(ast.ExprNode)}
-	}
-|	PrimaryFactor "<<" PrimaryFactor %prec lsh
-	{
-		$$ = &ast.BinaryOperationExpr{Op: opcode.LeftShift, L: $1.(ast.ExprNode), R: $3.(ast.ExprNode)}
-	}
-|	PrimaryFactor ">>" PrimaryFactor %prec rsh
-	{
-		$$ = &ast.BinaryOperationExpr{Op: opcode.RightShift, L: $1.(ast.ExprNode), R: $3.(ast.ExprNode)}
-	}
-|	PrimaryFactor '+' PrimaryFactor %prec '+'
-	{
-		$$ = &ast.BinaryOperationExpr{Op: opcode.Plus, L: $1.(ast.ExprNode), R: $3.(ast.ExprNode)}
-	}
-|	PrimaryFactor '-' PrimaryFactor %prec '-'
-	{
-		$$ = &ast.BinaryOperationExpr{Op: opcode.Minus, L: $1.(ast.ExprNode), R: $3.(ast.ExprNode)}
-	}
-|	PrimaryFactor '*' PrimaryFactor %prec '*'
-	{
-		$$ = &ast.BinaryOperationExpr{Op: opcode.Mul, L: $1.(ast.ExprNode), R: $3.(ast.ExprNode)}
-	}
-|	PrimaryFactor '/' PrimaryFactor %prec '/'
-	{
-		$$ = &ast.BinaryOperationExpr{Op: opcode.Div, L: $1.(ast.ExprNode), R: $3.(ast.ExprNode)}
-	}
-|	PrimaryFactor '%' PrimaryFactor %prec '%'
-	{
-		$$ = &ast.BinaryOperationExpr{Op: opcode.Mod, L: $1.(ast.ExprNode), R: $3.(ast.ExprNode)}
-	}
-|	PrimaryFactor "DIV" PrimaryFactor %prec div
-	{
-		$$ = &ast.BinaryOperationExpr{Op: opcode.IntDiv, L: $1.(ast.ExprNode), R: $3.(ast.ExprNode)}
-	}
-|	PrimaryFactor "MOD" PrimaryFactor %prec mod
-	{
-		$$ = &ast.BinaryOperationExpr{Op: opcode.Mod, L: $1.(ast.ExprNode), R: $3.(ast.ExprNode)}
-	}
-|	PrimaryFactor '^' PrimaryFactor
-	{
-		$$ = &ast.BinaryOperationExpr{Op: opcode.Xor, L: $1.(ast.ExprNode), R: $3.(ast.ExprNode)}
-	}
-|	PrimaryExpression
-
-
 Priority:
 	{
-		$$ = ast.NoPriority
+		$$ = mysql.NoPriority
 	}
 |	"LOW_PRIORITY"
 	{
-		$$ = ast.LowPriority
+		$$ = mysql.LowPriority
 	}
 |	"HIGH_PRIORITY"
 	{
-		$$ = ast.HighPriority
+		$$ = mysql.HighPriority
 	}
 |	"DELAYED"
 	{
-		$$ = ast.DelayedPriority
+		$$ = mysql.DelayedPriority
 	}
 
 LowPriorityOptional:
@@ -3173,7 +3524,7 @@ TableName:
 	{
 		$$ = &ast.TableName{Name:model.NewCIStr($1)}
 	}
-|	IdentifierOrReservedKeyword '.' IdentifierOrReservedKeyword
+|	Identifier '.' Identifier
 	{
 		$$ = &ast.TableName{Schema:model.NewCIStr($1),	Name:model.NewCIStr($3)}
 	}
@@ -3190,7 +3541,7 @@ TableNameList:
 	}
 
 QuickOptional:
-	%prec lowerThanQuick
+	%prec empty
 	{
 		$$ = false
 	}
@@ -3232,6 +3583,9 @@ PrepareSQL:
 		$$ = $1
 	}
 |	UserVariable
+	{
+		$$ = $1.(interface{})
+	}
 
 
 /*
@@ -3257,11 +3611,11 @@ ExecuteStmt:
 UserVariableList:
 	UserVariable
 	{
-		$$ = []ast.ExprNode{$1.(ast.ExprNode)}
+		$$ = []ast.ExprNode{$1}
 	}
 |	UserVariableList ',' UserVariable
 	{
-		$$ = append($1.([]ast.ExprNode), $3.(ast.ExprNode))
+		$$ = append($1.([]ast.ExprNode), $3)
 	}
 
 /*
@@ -3290,7 +3644,8 @@ SelectStmt:
 	"SELECT" SelectStmtOpts SelectStmtFieldList SelectStmtLimit SelectLockOpt
 	{
 		st := &ast.SelectStmt {
-			Distinct:      $2.(bool),
+			SelectStmtOpts: $2.(*ast.SelectStmtOpts),
+			Distinct:      $2.(*ast.SelectStmtOpts).Distinct,
 			Fields:        $3.(*ast.FieldList),
 			LockTp:	       $5.(ast.SelectLockType),
 		}
@@ -3318,7 +3673,8 @@ SelectStmt:
 |	"SELECT" SelectStmtOpts SelectStmtFieldList FromDual WhereClauseOptional SelectStmtLimit SelectLockOpt
 	{
 		st := &ast.SelectStmt {
-			Distinct:      $2.(bool),
+			SelectStmtOpts: $2.(*ast.SelectStmtOpts),
+			Distinct:      $2.(*ast.SelectStmtOpts).Distinct,
 			Fields:        $3.(*ast.FieldList),
 			LockTp:	       $7.(ast.SelectLockType),
 		}
@@ -3339,11 +3695,16 @@ SelectStmt:
 	TableRefsClause WhereClauseOptional SelectStmtGroup HavingClause OrderByOptional
 	SelectStmtLimit SelectLockOpt
 	{
+		opts := $2.(*ast.SelectStmtOpts)
 		st := &ast.SelectStmt{
-			Distinct:	$2.(bool),
+			SelectStmtOpts: $2.(*ast.SelectStmtOpts),
+			Distinct:		opts.Distinct,
 			Fields:		$3.(*ast.FieldList),
 			From:		$5.(*ast.TableRefsClause),
 			LockTp:		$11.(ast.SelectLockType),
+		}
+		if opts.TableHints != nil {
+			st.TableHints = opts.TableHints
 		}
 
 		lastField := st.Fields.Fields[len(st.Fields.Fields)-1]
@@ -3552,15 +3913,30 @@ JoinTable:
 	}
 |	TableRef CrossOpt TableRef "ON" Expression
 	{
-		on := &ast.OnCondition{Expr: $5.(ast.ExprNode)}
+		on := &ast.OnCondition{Expr: $5}
 		$$ = &ast.Join{Left: $1.(ast.ResultSetNode), Right: $3.(ast.ResultSetNode), Tp: ast.CrossJoin, On: on}
+	}
+|	TableRef CrossOpt TableRef "USING" '(' ColumnNameList ')'
+	{
+		$$ = &ast.Join{Left: $1.(ast.ResultSetNode), Right: $3.(ast.ResultSetNode), Tp: ast.CrossJoin, Using: $6.([]*ast.ColumnName)}
 	}
 |	TableRef JoinType OuterOpt "JOIN" TableRef "ON" Expression
 	{
-		on := &ast.OnCondition{Expr: $7.(ast.ExprNode)}
+		on := &ast.OnCondition{Expr: $7}
 		$$ = &ast.Join{Left: $1.(ast.ResultSetNode), Right: $5.(ast.ResultSetNode), Tp: $2.(ast.JoinType), On: on}
 	}
-	/* Support Using */
+|	TableRef JoinType OuterOpt "JOIN" TableRef "USING" '(' ColumnNameList ')'
+	{
+		$$ = &ast.Join{Left: $1.(ast.ResultSetNode), Right: $5.(ast.ResultSetNode), Tp: $2.(ast.JoinType), Using: $8.([]*ast.ColumnName)}
+	}
+|	TableRef "NATURAL" "JOIN" TableRef
+	{
+		$$ = &ast.Join{Left: $1.(ast.ResultSetNode), Right: $4.(ast.ResultSetNode), NaturalJoin: true}
+	}
+|	TableRef "NATURAL" JoinType OuterOpt "JOIN" TableRef
+	{
+		$$ = &ast.Join{Left: $1.(ast.ResultSetNode), Right: $6.(ast.ResultSetNode), Tp: $3.(ast.JoinType), NaturalJoin: true}
+	}
 
 JoinType:
 	"LEFT"
@@ -3578,58 +3954,114 @@ OuterOpt:
 
 CrossOpt:
 	"JOIN"
+|	"STRAIGHT_JOIN"
 |	"CROSS" "JOIN"
 |	"INNER" "JOIN"
+
 
 LimitClause:
 	{
 		$$ = nil
 	}
-|	"LIMIT" LengthNum
+|	"LIMIT" LimitOption
 	{
-		$$ = &ast.Limit{Count: $2.(uint64)}
+		$$ = &ast.Limit{Count: $2.(ast.ExprNode)}
+	}
+
+LimitOption:
+	LengthNum
+	{
+		$$ = ast.NewValueExpr($1)
+	}
+|	paramMarker
+	{
+		$$ = &ast.ParamMarkerExpr{
+			Offset: yyS[yypt].offset,
+		}
 	}
 
 SelectStmtLimit:
 	{
 		$$ = nil
 	}
-|	"LIMIT" LengthNum
+|	"LIMIT" LimitOption
 	{
-		$$ = &ast.Limit{Count: $2.(uint64)}
+		$$ = &ast.Limit{Count: $2.(ast.ExprNode)}
 	}
-|	"LIMIT" LengthNum ',' LengthNum
+|	"LIMIT" LimitOption ',' LimitOption
 	{
-		$$ = &ast.Limit{Offset: $2.(uint64), Count: $4.(uint64)}
+		$$ = &ast.Limit{Offset: $2.(ast.ExprNode), Count: $4.(ast.ExprNode)}
 	}
-|	"LIMIT" LengthNum "OFFSET" LengthNum
+|	"LIMIT" LimitOption "OFFSET" LimitOption
 	{
-		$$ = &ast.Limit{Offset: $4.(uint64), Count: $2.(uint64)}
+		$$ = &ast.Limit{Offset: $4.(ast.ExprNode), Count: $2.(ast.ExprNode)}
 	}
 
-SelectStmtDistinct:
-	/* EMPTY */
-	{
-		$$ = false
-	}
-|	"ALL"
-	{
-		$$ = false
-	}
-|	"DISTINCT"
-	{
-		$$ = true
-	}
 
 SelectStmtOpts:
-	SelectStmtDistinct SelectStmtSQLCache SelectStmtCalcFoundRows
+	TableOptimizerHints DefaultFalseDistinctOpt Priority SelectStmtSQLCache SelectStmtCalcFoundRows
 	{
-		// TODO: return calc_found_rows opt and support more other options
-		$$ = $1
+		opt := &ast.SelectStmtOpts{}
+		if $1 != nil {
+			opt.TableHints = $1.([]*ast.TableOptimizerHint)
+		}
+		if $2 != nil {
+			opt.Distinct = $2.(bool)
+		}
+		if $3 != nil {
+			opt.Priority = $3.(mysql.PriorityEnum)
+		}
+		if $4 != nil {
+			opt.SQLCache = $4.(bool)
+		}
+		if $5 != nil {
+			opt.CalcFoundRows = $5.(bool)
+		}
+
+		$$ = opt
+	}
+
+TableOptimizerHints:
+	/* empty */
+	{
+		$$ = nil
+	}
+|	hintBegin TableOptimizerHintList hintEnd
+	{
+		$$ = $2
+	}
+
+HintTableList:
+	Identifier
+	{
+		$$ = []model.CIStr{model.NewCIStr($1)}
+	}
+|	HintTableList ',' Identifier
+	{
+		$$ = append($1.([]model.CIStr), model.NewCIStr($3))
+	}
+
+TableOptimizerHintList:
+	TableOptimizerHintOpt
+	{
+		$$ = []*ast.TableOptimizerHint{$1.(*ast.TableOptimizerHint)}
+	}
+|	TableOptimizerHintList TableOptimizerHintOpt
+	{
+		$$ = append($1.([]*ast.TableOptimizerHint), $2.(*ast.TableOptimizerHint))
+	}
+
+TableOptimizerHintOpt:
+	tidbSMJ '(' HintTableList ')'
+	{
+		$$ = &ast.TableOptimizerHint{HintName: model.NewCIStr($1), Tables: $3.([]model.CIStr)}
+	}
+|	tidbINLJ '(' HintTableList ')'
+	{
+		$$ = &ast.TableOptimizerHint{HintName: model.NewCIStr($1), Tables: $3.([]model.CIStr)}
 	}
 
 SelectStmtCalcFoundRows:
-	%prec lowerThanCalcFoundRows
 	{
 		$$ = false
 	}
@@ -3638,9 +4070,9 @@ SelectStmtCalcFoundRows:
 		$$ = true
 	}
 SelectStmtSQLCache:
-	%prec lowerThanSQLCache
+	%prec empty
 	{
-		$$ = false
+		$$ = true
 	}
 |	"SQL_CACHE"
 	{
@@ -3753,26 +4185,19 @@ UnionClauseList:
 
 UnionSelect:
 	SelectStmt
+	{
+		$$ = $1.(interface{})
+	}
 |	'(' SelectStmt ')'
 	{
 		st := $2.(*ast.SelectStmt)
 		endOffset := parser.endOffset(&yyS[yypt])
 		parser.setLastSelectFieldText(st, endOffset)
-		$$ = st
+		$$ = $2
 	}
 
 UnionOpt:
-	{
-		$$ = true
-	}
-|	"ALL"
-	{
-		$$ = false
-	}
-|	"DISTINCT"
-	{
-		$$ = true
-	}
+DefaultTrueDistinctOpt
 
 
 /********************Set Statement*******************************/
@@ -3787,52 +4212,101 @@ SetStmt:
 	}
 |	"SET" "PASSWORD" "FOR" Username eq PasswordOpt
 	{
-		$$ = &ast.SetPwdStmt{User: $4.(string), Password: $6.(string)}
+		$$ = &ast.SetPwdStmt{User: $4.(*auth.UserIdentity), Password: $6.(string)}
 	}
 |	"SET" "GLOBAL" "TRANSACTION" TransactionChars
 	{
-		// Parsed but ignored
+		vars := $4.([]*ast.VariableAssignment)
+		for _, v := range vars {
+			v.IsGlobal = true
+		}
+		$$ = &ast.SetStmt{Variables: vars}
 	}
 |	"SET" "SESSION" "TRANSACTION" TransactionChars
 	{
-		// Parsed but ignored
+		$$ = &ast.SetStmt{Variables: $4.([]*ast.VariableAssignment)}
 	}
 
 TransactionChars:
 	TransactionChar
+	{
+		if $1 != nil {
+			$$ = []*ast.VariableAssignment{$1.(*ast.VariableAssignment)}
+		} else {
+			$$ = []*ast.VariableAssignment{}
+		}
+	}
 |	TransactionChars ',' TransactionChar
+	{
+		if $3 != nil {
+			$$ = append($1.([]*ast.VariableAssignment), $3.(*ast.VariableAssignment))
+		} else {
+			$$ = $1
+		}
+	}
 
 TransactionChar:
 	"ISOLATION" "LEVEL" IsolationLevel
+	{
+		expr := ast.NewValueExpr($3)
+		$$ = &ast.VariableAssignment{Name: "tx_isolation", Value: expr, IsSystem: true}
+	}
 |	"READ" "WRITE"
+	{
+		// Parsed but ignored
+		$$ = nil
+	}
 |	"READ" "ONLY"
+	{
+		// Parsed but ignored
+		$$ = nil
+	}
 
 IsolationLevel:
 	"REPEATABLE" "READ"
+	{
+		$$ = ast.RepeatableRead
+	}
 |	"READ"	"COMMITTED"
+	{
+		$$ = ast.ReadCommitted
+	}
 |	"READ"	"UNCOMMITTED"
+	{
+		$$ = ast.ReadUncommitted
+	}
 |	"SERIALIZABLE"
+	{
+		$$ = ast.Serializable
+	}
+
+SetExpr:
+	"ON"
+	{
+		$$ = ast.NewValueExpr("ON")
+	}
+|	ExprOrDefault
 
 VariableAssignment:
-	Identifier eq Expression
+	Identifier eq SetExpr
 	{
-		$$ = &ast.VariableAssignment{Name: $1, Value: $3.(ast.ExprNode), IsSystem: true}
+		$$ = &ast.VariableAssignment{Name: $1, Value: $3, IsSystem: true}
 	}
-|	"GLOBAL" Identifier eq Expression
+|	"GLOBAL" Identifier eq SetExpr
 	{
-		$$ = &ast.VariableAssignment{Name: $2, Value: $4.(ast.ExprNode), IsGlobal: true, IsSystem: true}
+		$$ = &ast.VariableAssignment{Name: $2, Value: $4, IsGlobal: true, IsSystem: true}
 	}
-|	"SESSION" Identifier eq Expression
+|	"SESSION" Identifier eq SetExpr
 	{
-		$$ = &ast.VariableAssignment{Name: $2, Value: $4.(ast.ExprNode), IsSystem: true}
+		$$ = &ast.VariableAssignment{Name: $2, Value: $4, IsSystem: true}
 	}
 |	"LOCAL" Identifier eq Expression
 	{
-		$$ = &ast.VariableAssignment{Name: $2, Value: $4.(ast.ExprNode), IsSystem: true}
+		$$ = &ast.VariableAssignment{Name: $2, Value: $4, IsSystem: true}
 	}
-|	"SYS_VAR" eq Expression
+|	doubleAtIdentifier eq SetExpr
 	{
-		v := strings.ToLower($1.(string))
+		v := strings.ToLower($1)
 		var isGlobal bool
 		if strings.HasPrefix(v, "@@global.") {
 			isGlobal = true
@@ -3844,19 +4318,19 @@ VariableAssignment:
 		} else if strings.HasPrefix(v, "@@") {
 			v = strings.TrimPrefix(v, "@@")
 		}
-		$$ = &ast.VariableAssignment{Name: v, Value: $3.(ast.ExprNode), IsGlobal: isGlobal, IsSystem: true}
+		$$ = &ast.VariableAssignment{Name: v, Value: $3, IsGlobal: isGlobal, IsSystem: true}
 	}
-|	"USER_VAR" eq Expression
+|	singleAtIdentifier eq Expression
 	{
-		v := $1.(string)
+		v := $1
 		v = strings.TrimPrefix(v, "@")
-		$$ = &ast.VariableAssignment{Name: v, Value: $3.(ast.ExprNode)}
+		$$ = &ast.VariableAssignment{Name: v, Value: $3}
 	}
-|	"USER_VAR" assignmentEq Expression
+|	singleAtIdentifier assignmentEq Expression
 	{
-		v := $1.(string)
+		v := $1
 		v = strings.TrimPrefix(v, "@")
-		$$ = &ast.VariableAssignment{Name: v, Value: $3.(ast.ExprNode)}
+		$$ = &ast.VariableAssignment{Name: v, Value: $3}
 	}
 |	"NAMES" CharsetName
 	{
@@ -3908,9 +4382,9 @@ Variable:
 	SystemVariable | UserVariable
 
 SystemVariable:
-	"SYS_VAR"
+	doubleAtIdentifier
 	{
-		v := strings.ToLower($1.(string))
+		v := strings.ToLower($1)
 		var isGlobal bool
 		if strings.HasPrefix(v, "@@global.") {
 			isGlobal = true
@@ -3926,28 +4400,36 @@ SystemVariable:
 	}
 
 UserVariable:
-	"USER_VAR"
+	singleAtIdentifier
 	{
-		v := $1.(string)
+		v := $1
 		v = strings.TrimPrefix(v, "@")
 		$$ = &ast.VariableExpr{Name: v, IsGlobal: false, IsSystem: false}
 	}
 
 Username:
-	stringLit "AT" stringLit
+	StringName
 	{
-		$$ = $1 + "@" + $3
+		$$ = &auth.UserIdentity{Username: $1.(string), Hostname: "%"}
+	}
+|	StringName '@' StringName
+	{
+		$$ = &auth.UserIdentity{Username: $1.(string), Hostname: $3.(string)}
+	}
+|	StringName singleAtIdentifier
+	{
+		$$ = &auth.UserIdentity{Username: $1.(string), Hostname: strings.TrimPrefix($2, "@")}
 	}
 
 UsernameList:
-    Username
-    {
-        $$ = []string{$1.(string)}
-    }
-|   UsernameList ',' Username
-    {
-        $$ = append($1.([]string), $3.(string))
-    }
+	Username
+	{
+		$$ = []*auth.UserIdentity{$1.(*auth.UserIdentity)}
+	}
+|	UsernameList ',' Username
+	{
+		$$ = append($1.([]*auth.UserIdentity), $3.(*auth.UserIdentity))
+	}
 
 PasswordOpt:
 	stringLit
@@ -3971,6 +4453,10 @@ AdminStmt:
 	{
 		$$ = &ast.AdminStmt{Tp: ast.AdminShowDDL}
 	}
+|	"ADMIN" "SHOW" "DDL" "JOBS"
+	{
+		$$ = &ast.AdminStmt{Tp: ast.AdminShowDDLJobs}
+	}
 |	"ADMIN" "CHECK" "TABLE" TableNameList
 	{
 		$$ = &ast.AdminStmt{
@@ -3978,6 +4464,24 @@ AdminStmt:
 			Tables: $4.([]*ast.TableName),
 		}
 	}
+|	"ADMIN" "CANCEL" "DDL" "JOBS" NumList
+	{
+		$$ = &ast.AdminStmt{
+			Tp: ast.AdminCancelDDLJobs,
+			JobIDs: $5.([]int64),
+		}
+	}
+
+NumList:
+       NUM
+       {
+	        $$ = []int64{$1.(int64)}
+       }
+|
+       NumList ',' NUM
+       {
+	        $$ = append($1.([]int64), $3.(int64))
+       }
 
 /****************************Show Statement*******************************/
 ShowStmt:
@@ -4000,7 +4504,7 @@ ShowStmt:
 			Table:	$4.(*ast.TableName),
 		}
 	}
-|	"SHOW" "CREATE" "DATABASE" DBName 
+|	"SHOW" "CREATE" "DATABASE" DBName
 	{
 		$$ = &ast.ShowStmt{
 			Tp:	ast.ShowCreateDatabase,
@@ -4017,20 +4521,61 @@ ShowStmt:
 		// See https://dev.mysql.com/doc/refman/5.7/en/show-grants.html
 		$$ = &ast.ShowStmt{
 			Tp:	ast.ShowGrants,
-			User:	$4.(string),
-		}
-	}
-|	"SHOW" ShowIndexKwd FromOrIn TableName
-	{
-		$$ = &ast.ShowStmt{
-			Tp: ast.ShowIndex,
-			Table: $4.(*ast.TableName),
+			User:	$4.(*auth.UserIdentity),
 		}
 	}
 |	"SHOW" "PROCESSLIST"
 	{
 		$$ = &ast.ShowStmt{
 			Tp: ast.ShowProcessList,
+		}
+	}
+|	"SHOW" "STATS_META" ShowLikeOrWhereOpt
+	{
+		stmt := &ast.ShowStmt{
+			Tp: ast.ShowStatsMeta,
+		}
+		if $3 != nil {
+			if x, ok := $3.(*ast.PatternLikeExpr); ok {
+				stmt.Pattern = x
+			} else {
+				stmt.Where = $3.(ast.ExprNode)
+			}
+		}
+		$$ = stmt
+	}
+|	"SHOW" "STATS_HISTOGRAMS" ShowLikeOrWhereOpt
+	{
+		stmt := &ast.ShowStmt{
+			Tp: ast.ShowStatsHistograms,
+		}
+		if $3 != nil {
+			if x, ok := $3.(*ast.PatternLikeExpr); ok {
+				stmt.Pattern = x
+			} else {
+				stmt.Where = $3.(ast.ExprNode)
+			}
+		}
+		$$ = stmt
+	}
+|	"SHOW" "STATS_BUCKETS" ShowLikeOrWhereOpt
+	{
+		stmt := &ast.ShowStmt{
+			Tp: ast.ShowStatsBuckets,
+		}
+		if $3 != nil {
+			if x, ok := $3.(*ast.PatternLikeExpr); ok {
+				stmt.Pattern = x
+			} else {
+				stmt.Where = $3.(ast.ExprNode)
+			}
+		}
+		$$ = stmt
+	}
+|	"SHOW" "PROFILES"
+	{
+		$$ = &ast.ShowStmt{
+			Tp: ast.ShowProfiles,
 		}
 	}
 
@@ -4051,11 +4596,7 @@ ShowTargetFilterable:
 	{
 		$$ = &ast.ShowStmt{Tp: ast.ShowDatabases}
 	}
-|	"SCHEMAS"
-	{
-		$$ = &ast.ShowStmt{Tp: ast.ShowDatabases}
-	}
-|	"CHARACTER" "SET"
+|	CharsetKw
 	{
 		$$ = &ast.ShowStmt{Tp: ast.ShowCharset}
 	}
@@ -4073,6 +4614,21 @@ ShowTargetFilterable:
 			Tp:	ast.ShowTableStatus,
 			DBName:	$3.(string),
 		}
+	}
+|	ShowIndexKwd FromOrIn TableName
+	{
+        $$ = &ast.ShowStmt{
+            Tp: ast.ShowIndex,
+            Table: $3.(*ast.TableName),
+		}
+	}
+|	ShowIndexKwd FromOrIn Identifier FromOrIn Identifier
+	{
+        show := &ast.ShowStmt{
+            Tp: ast.ShowIndex,
+            Table: &ast.TableName{Name:model.NewCIStr($3), Schema: model.NewCIStr($5)},
+		}
+        $$ = show
 	}
 |	OptFull "COLUMNS" ShowTableAliasOpt ShowDatabaseNameOpt
 	{
@@ -4140,21 +4696,33 @@ ShowTargetFilterable:
 			Tp: ast.ShowProcedureStatus,
 		}
 	}
-
+|	"EVENTS" ShowDatabaseNameOpt
+	{
+		$$ = &ast.ShowStmt{
+			Tp:	ast.ShowEvents,
+			DBName:	$2.(string),
+		}
+	}
+|	"PLUGINS"
+	{
+		$$ = &ast.ShowStmt{
+			Tp: 	ast.ShowPlugins,
+		}
+	}
 ShowLikeOrWhereOpt:
 	{
 		$$ = nil
 	}
-|	"LIKE" PrimaryExpression
+|	"LIKE" SimpleExpr
 	{
 		$$ = &ast.PatternLikeExpr{
-			Pattern: $2.(ast.ExprNode),
+			Pattern: $2,
 			Escape: '\\',
 		}
 	}
 |	"WHERE" Expression
 	{
-		$$ = $2.(ast.ExprNode)
+		$$ = $2
 	}
 
 GlobalScope:
@@ -4203,12 +4771,26 @@ ShowTableAliasOpt:
 	}
 
 FlushStmt:
-	"FLUSH" NoWriteToBinLogAliasOpt TableOrTables TableNameListOpt WithReadLockOpt
+	"FLUSH" NoWriteToBinLogAliasOpt FlushOption
 	{
-		$$ = &ast.FlushTableStmt{
-			Tables: $4.([]*ast.TableName),
-			NoWriteToBinLog: $2.(bool),
-			ReadLock: $5.(bool),
+		tmp := $3.(*ast.FlushStmt)
+		tmp.NoWriteToBinLog = $2.(bool)
+		$$ = tmp
+	}
+
+FlushOption:
+	"PRIVILEGES"
+	{
+		$$ = &ast.FlushStmt{
+			Tp: ast.FlushPrivileges,
+		}
+	}
+|	TableOrTables TableNameListOpt WithReadLockOpt
+	{
+		$$ = &ast.FlushStmt{
+			Tp: ast.FlushTables,
+			Tables: $2.([]*ast.TableName),
+			ReadLock: $3.(bool),
 		}
 	}
 
@@ -4226,6 +4808,7 @@ NoWriteToBinLogAliasOpt:
 	}
 
 TableNameListOpt:
+	%prec empty
 	{
 		$$ = []*ast.TableName{}
 	}
@@ -4247,6 +4830,7 @@ Statement:
 	EmptyStmt
 |	AdminStmt
 |	AlterTableStmt
+|	AlterUserStmt
 |	AnalyzeTableStmt
 |	BeginTransactionStmt
 |	BinlogStmt
@@ -4265,26 +4849,30 @@ Statement:
 |	DropTableStmt
 |	DropViewStmt
 |	DropUserStmt
+|	DropStatsStmt
 |	FlushStmt
 |	GrantStmt
 |	InsertIntoStmt
+|	KillStmt
 |	LoadDataStmt
 |	PreparedStmt
 |	RollbackStmt
+|	RenameTableStmt
 |	ReplaceIntoStmt
+|	RevokeStmt
 |	SelectStmt
 |	UnionStmt
 |	SetStmt
 |	ShowStmt
-|	TruncateTableStmt
-|	UpdateStmt
-|	UseStmt
 |	SubSelect
 	{
 		// `(select 1)`; is a valid select statement
 		// TODO: This is used to fix issue #320. There may be a better solution.
-		$$ = $1.(*ast.SubqueryExpr).Query
+		$$ = $1.(*ast.SubqueryExpr).Query.(ast.StmtNode)
 	}
+|	TruncateTableStmt
+|	UpdateStmt
+|	UseStmt
 |	UnlockTablesStmt
 |	LockTablesStmt
 
@@ -4294,12 +4882,13 @@ ExplainableStmt:
 |	UpdateStmt
 |	InsertIntoStmt
 |	ReplaceIntoStmt
+|	UnionStmt
 
 StatementList:
 	Statement
 	{
 		if $1 != nil {
-			s := $1.(ast.StmtNode)
+			s := $1
 			if lexer, ok := yylex.(stmtTexter); ok {
 				s.SetText(lexer.stmtText())
 			}
@@ -4309,7 +4898,7 @@ StatementList:
 |	StatementList ';' Statement
 	{
 		if $3 != nil {
-			s := $3.(ast.StmtNode)
+			s := $3
 			if lexer, ok := yylex.(stmtTexter); ok {
 				s.SetText(lexer.stmtText())
 			}
@@ -4401,7 +4990,7 @@ TableOption:
 	{
 		$$ = &ast.TableOption{Tp: ast.TableOptionPassword, StrValue: $3}
 	}
-|	"COMPRESSION" EqOpt Identifier
+|	"COMPRESSION" EqOpt stringLit
 	{
 		$$ = &ast.TableOption{Tp: ast.TableOptionCompression, StrValue: $3}
 	}
@@ -4457,7 +5046,6 @@ TableOptionList:
 	}
 
 OptTable:
-	%prec lowestOpt
 	{}
 |	"TABLE"
 
@@ -4546,16 +5134,11 @@ NumericType:
 		x := types.NewFieldType($1.(byte))
 		x.Flen = fopt.Flen
 		if x.Tp == mysql.TypeFloat {
-			// Fix issue #312
-			if x.Flen > 53 {
-				yylex.Errorf("Float len(%d) should not be greater than 53", x.Flen)
-				return 1
-			}
-			if x.Flen > 24 {
+			if x.Flen > mysql.PrecisionForFloat {
 				x.Tp = mysql.TypeDouble
 			}
 		}
-		x.Decimal =fopt.Decimal
+		x.Decimal = fopt.Decimal
 		for _, o := range $3.([]*ast.TypeOpt) {
 			if o.IsUnsigned {
 				x.Flag |= mysql.UnsignedFlag
@@ -4570,7 +5153,7 @@ NumericType:
 	{
 		x := types.NewFieldType($1.(byte))
 		x.Flen = $2.(int)
-		if x.Flen == -1 || x.Flen == 0 {
+		if x.Flen == types.UnspecifiedLength || x.Flen == 0 {
 			x.Flen = 1
 		} else if x.Flen > 64 {
 			yylex.Errorf("invalid field length %d for bit type, must in [1, 64]", x.Flen)
@@ -4595,6 +5178,26 @@ IntegerType:
 	{
 		$$ = mysql.TypeLong
 	}
+|	"INT1"
+	{
+		$$ = mysql.TypeTiny
+	}
+| 	"INT2"
+	{
+		$$ = mysql.TypeShort
+	}
+| 	"INT3"
+	{
+		$$ = mysql.TypeInt24
+	}
+|	"INT4"
+	{
+		$$ = mysql.TypeLong
+	}
+|	"INT8"
+	{
+		$$ = mysql.TypeLonglong
+	}
 |	"INTEGER"
 	{
 		$$ = mysql.TypeLong
@@ -4615,6 +5218,7 @@ IntegerType:
 OptInteger:
 	{}
 |	"INTEGER"
+|	"INT"
 
 FixedPointType:
 	"DECIMAL"
@@ -4655,6 +5259,8 @@ StringType:
 	{
 		x := types.NewFieldType(mysql.TypeString)
 		x.Flen = $3.(int)
+		x.Charset = $5.(string)
+		x.Collate = $6.(string)
 		if $4.(bool) {
 			x.Flag |= mysql.BinaryFlag
 		}
@@ -4663,20 +5269,22 @@ StringType:
 |	NationalOpt "CHAR" OptBinary OptCharset OptCollate
 	{
 		x := types.NewFieldType(mysql.TypeString)
+		x.Charset = $4.(string)
+		x.Collate = $5.(string)
 		if $3.(bool) {
 			x.Flag |= mysql.BinaryFlag
 		}
 		$$ = x
 	}
-|	NationalOpt "VARCHAR" FieldLen OptBinary OptCharset OptCollate
+|	Varchar FieldLen OptBinary OptCharset OptCollate
 	{
 		x := types.NewFieldType(mysql.TypeVarchar)
-		x.Flen = $3.(int)
-		if $4.(bool) {
+		x.Flen = $2.(int)
+		x.Charset = $4.(string)
+		x.Collate = $5.(string)
+		if $3.(bool) {
 			x.Flag |= mysql.BinaryFlag
 		}
-		x.Charset = $5.(string)
-		x.Collate = $6.(string)
 		$$ = x
 	}
 |	"BINARY" OptFieldLen
@@ -4685,6 +5293,7 @@ StringType:
 		x.Flen = $2.(int)
 		x.Charset = charset.CharsetBin
 		x.Collate = charset.CharsetBin
+		x.Flag |= mysql.BinaryFlag
 		$$ = x
 	}
 |	"VARBINARY" FieldLen
@@ -4693,20 +5302,25 @@ StringType:
 		x.Flen = $2.(int)
 		x.Charset = charset.CharsetBin
 		x.Collate = charset.CharsetBin
+		x.Flag |= mysql.BinaryFlag
 		$$ = x
 	}
 |	BlobType
 	{
+		x := $1.(*types.FieldType)
+		x.Charset = charset.CharsetBin
+		x.Collate = charset.CharsetBin
+		x.Flag |= mysql.BinaryFlag
 		$$ = $1.(*types.FieldType)
 	}
 |	TextType OptBinary OptCharset OptCollate
 	{
 		x := $1.(*types.FieldType)
+		x.Charset = $3.(string)
+		x.Collate = $4.(string)
 		if $2.(bool) {
 			x.Flag |= mysql.BinaryFlag
 		}
-		x.Charset = $3.(string)
-		x.Collate = $4.(string)
 		$$ = x
 	}
 |	"ENUM" '(' StringList ')' OptCharset OptCollate
@@ -4725,39 +5339,45 @@ StringType:
 		x.Collate = $6.(string)
 		$$ = x
 	}
+|	"JSON"
+	{
+		x := types.NewFieldType(mysql.TypeJSON)
+		x.Decimal = 0
+		x.Charset = charset.CharsetBin
+		x.Collate = charset.CollationBin
+		$$ = x
+	}
 
 NationalOpt:
 	{}
 |	"NATIONAL"
 
+Varchar:
+"NATIONAL" "VARCHAR"
+| "VARCHAR"
+| "NVARCHAR"
+
+
 BlobType:
 	"TINYBLOB"
 	{
 		x := types.NewFieldType(mysql.TypeTinyBlob)
-		x.Charset = charset.CharsetBin
-		x.Collate = charset.CharsetBin
 		$$ = x
 	}
 |	"BLOB" OptFieldLen
 	{
 		x := types.NewFieldType(mysql.TypeBlob)
 		x.Flen = $2.(int)
-		x.Charset = charset.CharsetBin
-		x.Collate = charset.CharsetBin
 		$$ = x
 	}
 |	"MEDIUMBLOB"
 	{
 		x := types.NewFieldType(mysql.TypeMediumBlob)
-		x.Charset = charset.CharsetBin
-		x.Collate = charset.CharsetBin
 		$$ = x
 	}
 |	"LONGBLOB"
 	{
 		x := types.NewFieldType(mysql.TypeLongBlob)
-		x.Charset = charset.CharsetBin
-		x.Collate = charset.CharsetBin
 		$$ = x
 	}
 
@@ -4795,25 +5415,41 @@ DateAndTimeType:
 |	"DATETIME" OptFieldLen
 	{
 		x := types.NewFieldType(mysql.TypeDatetime)
+		x.Flen = mysql.MaxDatetimeWidthNoFsp
 		x.Decimal = $2.(int)
+		if x.Decimal > 0 {
+			x.Flen = x.Flen + 1 + x.Decimal
+		}
 		$$ = x
 	}
 |	"TIMESTAMP" OptFieldLen
 	{
 		x := types.NewFieldType(mysql.TypeTimestamp)
+		x.Flen = mysql.MaxDatetimeWidthNoFsp
 		x.Decimal = $2.(int)
+		if x.Decimal > 0 {
+			x.Flen = x.Flen + 1 + x.Decimal
+		}
 		$$ = x
 	}
 |	"TIME" OptFieldLen
 	{
 		x := types.NewFieldType(mysql.TypeDuration)
+		x.Flen = mysql.MaxDurationWidthNoFsp
 		x.Decimal = $2.(int)
+		if x.Decimal > 0 {
+			x.Flen = x.Flen + 1 + x.Decimal
+		}
 		$$ = x
 	}
 |	"YEAR" OptFieldLen
 	{
 		x := types.NewFieldType(mysql.TypeYear)
 		x.Flen = $2.(int)
+		if x.Flen != types.UnspecifiedLength && x.Flen != 4 {
+			yylex.Errorf("Supports only YEAR or YEAR(4) column.")
+			return -1
+		}
 		$$ = x
 	}
 
@@ -4825,7 +5461,6 @@ FieldLen:
 
 OptFieldLen:
 	{
-		/* -1 means unspecified field length*/
 		$$ = types.UnspecifiedLength
 	}
 |	FieldLen
@@ -4939,6 +5574,7 @@ UpdateStmt:
 			LowPriority:	$2.(bool),
 			TableRefs:	&ast.TableRefsClause{TableRefs: refs},
 			List:		$6.([]*ast.Assignment),
+			IgnoreErr:		$3.(bool),
 		}
 		if $7 != nil {
 			st.Where = $7.(ast.ExprNode)
@@ -4957,6 +5593,7 @@ UpdateStmt:
 			LowPriority:	$2.(bool),
 			TableRefs:	&ast.TableRefsClause{TableRefs: $4.(*ast.Join)},
 			List:		$6.([]*ast.Assignment),
+			IgnoreErr:		$3.(bool),
 		}
 		if $7 != nil {
 			st.Where = $7.(ast.ExprNode)
@@ -4973,7 +5610,7 @@ UseStmt:
 WhereClause:
 	"WHERE" Expression
 	{
-		$$ = $2.(ast.ExprNode)
+		$$ = $2
 	}
 
 WhereClauseOptional:
@@ -5004,11 +5641,32 @@ CreateUserStmt:
 		}
 	}
 
+/* See http://dev.mysql.com/doc/refman/5.7/en/alter-user.html */
+AlterUserStmt:
+	"ALTER" "USER" IfExists UserSpecList
+	{
+		$$ = &ast.AlterUserStmt{
+			IfExists: $3.(bool),
+			Specs: $4.([]*ast.UserSpec),
+		}
+	}
+| 	"ALTER" "USER" IfExists "USER" '(' ')' "IDENTIFIED" "BY" AuthString
+	{
+		auth := &ast.AuthOption {
+			AuthString: $9.(string),
+			ByAuthString: true,
+		}
+		$$ = &ast.AlterUserStmt{
+			IfExists: $3.(bool),
+			CurrentAuth: auth,
+		}
+	}
+
 UserSpec:
 	Username AuthOption
 	{
 		userSpec := &ast.UserSpec{
-			User: $1.(string),
+			User: $1.(*auth.UserIdentity),
 		}
 		if $2 != nil {
 			userSpec.AuthOpt = $2.(*ast.AuthOption)
@@ -5055,15 +5713,41 @@ HashString:
  * See https://dev.mysql.com/doc/refman/5.7/en/grant.html
  *************************************************************************************/
 GrantStmt:
-	 "GRANT" PrivElemList "ON" ObjectType PrivLevel "TO" UserSpecList
+	 "GRANT" PrivElemList "ON" ObjectType PrivLevel "TO" UserSpecList WithGrantOptionOpt
 	 {
 		$$ = &ast.GrantStmt{
 			Privs: $2.([]*ast.PrivElem),
 			ObjectType: $4.(ast.ObjectTypeType),
 			Level: $5.(*ast.GrantLevel),
 			Users: $7.([]*ast.UserSpec),
+			WithGrant: $8.(bool),
 		}
 	 }
+
+WithGrantOptionOpt:
+	{
+		$$ = false
+	}
+|	"WITH" "GRANT" "OPTION"
+	{
+		$$ = true
+	}
+|	"WITH" "MAX_QUERIES_PER_HOUR" NUM
+	{
+		$$ = false
+	}
+|	"WITH" "MAX_UPDATES_PER_HOUR" NUM
+	{
+		$$ = false
+	}
+|	"WITH" "MAX_CONNECTIONS_PER_HOUR" NUM
+	{
+		$$ = false
+	}
+|	"WITH" "MAX_USER_CONNECTIONS" NUM
+	{
+		$$ = false
+	}
 
 PrivElem:
 	PrivType
@@ -5111,6 +5795,10 @@ PrivType:
 	{
 		$$ = mysql.CreateUserPriv
 	}
+|	"TRIGGER"
+	{
+		$$ = mysql.TriggerPriv
+	}
 |	"DELETE"
 	{
 		$$ = mysql.DeletePriv
@@ -5118,6 +5806,10 @@ PrivType:
 |	"DROP"
 	{
 		$$ = mysql.DropPriv
+	}
+|	"PROCESS"
+	{
+		$$ = mysql.ProcessPriv
 	}
 |	"EXECUTE"
 	{
@@ -5135,6 +5827,10 @@ PrivType:
 	{
 		$$ = mysql.SelectPriv
 	}
+|	"SUPER"
+	{
+		$$ = mysql.SuperPriv
+	}
 |	"SHOW" "DATABASES"
 	{
 		$$ = mysql.ShowDBPriv
@@ -5146,6 +5842,22 @@ PrivType:
 |	"GRANT" "OPTION"
 	{
 		$$ = mysql.GrantPriv
+	}
+|	"REFERENCES"
+	{
+		$$ = mysql.ReferencesPriv
+	}
+|	"REPLICATION" "SLAVE"
+	{
+		$$ = mysql.PrivilegeType(0)
+	}
+|	"REPLICATION" "CLIENT"
+	{
+		$$ = mysql.PrivilegeType(0)
+	}
+|	"USAGE"
+	{
+		$$ = mysql.PrivilegeType(0)
 	}
 
 ObjectType:
@@ -5193,15 +5905,30 @@ PrivLevel:
 		}
 	}
 
+/**************************************RevokeStmt*******************************************
+ * See https://dev.mysql.com/doc/refman/5.7/en/revoke.html
+ *******************************************************************************************/
+RevokeStmt:
+	 "REVOKE" PrivElemList "ON" ObjectType PrivLevel "FROM" UserSpecList
+	 {
+		$$ = &ast.RevokeStmt{
+			Privs: $2.([]*ast.PrivElem),
+			ObjectType: $4.(ast.ObjectTypeType),
+			Level: $5.(*ast.GrantLevel),
+			Users: $7.([]*ast.UserSpec),
+		}
+	 }
+
 /**************************************LoadDataStmt*****************************************
  * See https://dev.mysql.com/doc/refman/5.7/en/load-data.html
  *******************************************************************************************/
 LoadDataStmt:
-	"LOAD" "DATA" LocalOpt "INFILE" stringLit "INTO" "TABLE" TableName Fields Lines
+	"LOAD" "DATA" LocalOpt "INFILE" stringLit "INTO" "TABLE" TableName Fields Lines ColumnNameListOptWithBrackets
 	{
 		x := &ast.LoadDataStmt{
 			Path:       $5,
 			Table:      $8.(*ast.TableName),
+			Columns:    $11.([]*ast.ColumnName),
 		}
 		if $3 != nil {
 			x.IsLocal = true
@@ -5217,7 +5944,7 @@ LoadDataStmt:
 
 LocalOpt:
 	{
-		$$ = nil 
+		$$ = nil
 	}
 |	"LOCAL"
 	{
@@ -5319,12 +6046,15 @@ LinesTerminated:
  *********************************************************************/
 
 UnlockTablesStmt:
-	"UNLOCK" "TABLES"
-	{}
+	"UNLOCK" TablesTerminalSym {}
 
 LockTablesStmt:
-	"LOCK" "TABLES" TableLockList
+	"LOCK" TablesTerminalSym TableLockList
 	{}
+
+TablesTerminalSym:
+	"TABLES"
+|	"TABLE"
 
 TableLock:
 	TableName LockType
@@ -5337,5 +6067,47 @@ LockType:
 TableLockList:
 	TableLock
 |	TableLockList ',' TableLock
+
+
+/********************************************************************
+ * Kill Statement
+ * See https://dev.mysql.com/doc/refman/5.7/en/kill.html
+ *******************************************************************/
+
+KillStmt:
+	KillOrKillTiDB NUM
+	{
+		$$ = &ast.KillStmt{
+			ConnectionID: getUint64FromNUM($2),
+			TiDBExtension: $1.(bool),
+		}
+	}
+|	KillOrKillTiDB "CONNECTION" NUM
+	{
+		$$ = &ast.KillStmt{
+			ConnectionID: getUint64FromNUM($3),
+			TiDBExtension: $1.(bool),
+		}
+	}
+|	KillOrKillTiDB "QUERY" NUM
+	{
+		$$ = &ast.KillStmt{
+			ConnectionID: getUint64FromNUM($3),
+			Query: true,
+			TiDBExtension: $1.(bool),
+		}
+	}
+
+KillOrKillTiDB:
+	"KILL"
+	{
+		$$ = false
+	}
+/* KILL TIDB is a special grammar extension in TiDB, it can be used only when
+   the client connect to TiDB directly, not proxied under LVS. */
+|	"KILL" "TIDB"
+	{
+		$$ = true
+	}
 
 %%

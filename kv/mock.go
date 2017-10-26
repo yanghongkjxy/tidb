@@ -15,11 +15,13 @@ package kv
 
 import (
 	"github.com/juju/errors"
+	"github.com/pingcap/tidb/store/tikv/oracle"
 )
 
 // mockTxn is a txn that returns a retryAble error when called Commit.
 type mockTxn struct {
-	opts map[Option]interface{}
+	opts  map[Option]interface{}
+	valid bool
 }
 
 // Always returns a retryable error.
@@ -28,6 +30,7 @@ func (t *mockTxn) Commit() error {
 }
 
 func (t *mockTxn) Rollback() error {
+	t.valid = false
 	return nil
 }
 
@@ -79,17 +82,35 @@ func (t *mockTxn) Delete(k Key) error {
 	return nil
 }
 
+func (t *mockTxn) Valid() bool {
+	return t.valid
+}
+
+func (t *mockTxn) Len() int {
+	return 0
+}
+
+func (t *mockTxn) Size() int {
+	return 0
+}
+
 // mockStorage is used to start a must commit-failed txn.
 type mockStorage struct {
 }
 
 func (s *mockStorage) Begin() (Transaction, error) {
 	tx := &mockTxn{
-		opts: make(map[Option]interface{}),
+		opts:  make(map[Option]interface{}),
+		valid: true,
 	}
 	return tx, nil
-
 }
+
+// BeginWithStartTS begins a transaction with startTS.
+func (s *mockStorage) BeginWithStartTS(startTS uint64) (Transaction, error) {
+	return s.Begin()
+}
+
 func (s *mockStorage) GetSnapshot(ver Version) (Snapshot, error) {
 	return &mockSnapshot{
 		store: NewMemDbBuffer(),
@@ -111,6 +132,14 @@ func (s *mockStorage) CurrentVersion() (Version, error) {
 
 func (s *mockStorage) GetClient() Client {
 	return nil
+}
+
+func (s *mockStorage) GetOracle() oracle.Oracle {
+	return nil
+}
+
+func (s *mockStorage) SupportDeleteRange() (supported bool) {
+	return false
 }
 
 // MockTxn is used for test cases that need more interfaces than Transaction.

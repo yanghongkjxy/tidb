@@ -17,12 +17,11 @@ import (
 	"sync"
 	"time"
 
+	log "github.com/Sirupsen/logrus"
 	"github.com/juju/errors"
-	"github.com/ngaut/log"
 	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/store/localstore/engine"
 	"github.com/pingcap/tidb/terror"
-	"github.com/pingcap/tidb/util/bytes"
 )
 
 const (
@@ -88,7 +87,7 @@ func (gc *localstoreCompactor) getAllVersions(key kv.Key) ([]kv.EncodedKey, erro
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
-		keys = append(keys, bytes.CloneBytes(mvccK))
+		keys = append(keys, mvccK)
 	}
 	return keys, nil
 }
@@ -177,7 +176,11 @@ func (gc *localstoreCompactor) Compact(k kv.Key) error {
 	filteredKeys := gc.filterExpiredKeys(keys)
 
 	for _, key := range filteredKeys {
-		gc.delCh <- key
+		select {
+		case <-gc.stopCh:
+			return nil
+		case gc.delCh <- key:
+		}
 	}
 	return nil
 }

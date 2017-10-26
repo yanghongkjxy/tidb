@@ -20,6 +20,7 @@ import (
 
 	. "github.com/pingcap/check"
 	"github.com/pingcap/tidb/mysql"
+	"github.com/pingcap/tidb/sessionctx/variable"
 	"github.com/pingcap/tidb/util/testleak"
 	"github.com/pingcap/tidb/util/types"
 )
@@ -65,8 +66,8 @@ func (s *testCodecSuite) TestCodecKey(c *C) {
 		},
 
 		{
-			types.MakeDatums(types.Hex{Value: 100}, types.Bit{Value: 100, Width: 8}),
-			types.MakeDatums(int64(100), uint64(100)),
+			types.MakeDatums(types.NewBinaryLiteralFromUint(100, -1), types.NewBinaryLiteralFromUint(100, 4)),
+			types.MakeDatums(uint64(100), uint64(100)),
 		},
 
 		{
@@ -238,6 +239,11 @@ func (s *testCodecSuite) TestNumberCodec(c *C) {
 		_, v, err = DecodeVarint(b)
 		c.Assert(err, IsNil)
 		c.Assert(v, Equals, t)
+
+		b = EncodeComparableVarint(nil, t)
+		_, v, err = DecodeComparableVarint(b)
+		c.Assert(err, IsNil)
+		c.Assert(v, Equals, t)
 	}
 
 	tblUint64 := []uint64{
@@ -271,7 +277,25 @@ func (s *testCodecSuite) TestNumberCodec(c *C) {
 		_, v, err = DecodeUvarint(b)
 		c.Assert(err, IsNil)
 		c.Assert(v, Equals, t)
+
+		b = EncodeComparableUvarint(nil, t)
+		_, v, err = DecodeComparableUvarint(b)
+		c.Assert(err, IsNil)
+		c.Assert(v, Equals, t)
 	}
+	var b []byte
+	b = EncodeComparableVarint(b, -1)
+	b = EncodeComparableUvarint(b, 1)
+	b = EncodeComparableVarint(b, 2)
+	b, i, err := DecodeComparableVarint(b)
+	c.Assert(err, IsNil)
+	c.Assert(i, Equals, int64(-1))
+	b, u, err := DecodeComparableUvarint(b)
+	c.Assert(err, IsNil)
+	c.Assert(u, Equals, uint64(1))
+	_, i, err = DecodeComparableVarint(b)
+	c.Assert(err, IsNil)
+	c.Assert(i, Equals, int64(2))
 }
 
 func (s *testCodecSuite) TestNumberOrder(c *C) {
@@ -308,6 +332,11 @@ func (s *testCodecSuite) TestNumberOrder(c *C) {
 
 		ret = bytes.Compare(b1, b2)
 		c.Assert(ret, Equals, -t.Ret)
+
+		b1 = EncodeComparableVarint(nil, t.Arg1)
+		b2 = EncodeComparableVarint(nil, t.Arg2)
+		ret = bytes.Compare(b1, b2)
+		c.Assert(ret, Equals, t.Ret)
 	}
 
 	tblUint64 := []struct {
@@ -340,6 +369,11 @@ func (s *testCodecSuite) TestNumberOrder(c *C) {
 
 		ret = bytes.Compare(b1, b2)
 		c.Assert(ret, Equals, -t.Ret)
+
+		b1 = EncodeComparableUvarint(nil, t.Arg1)
+		b2 = EncodeComparableUvarint(nil, t.Arg2)
+		ret = bytes.Compare(b1, b2)
+		c.Assert(ret, Equals, t.Ret)
 	}
 }
 
@@ -469,7 +503,7 @@ func (s *testCodecSuite) TestBytes(c *C) {
 }
 
 func parseTime(c *C, s string) types.Time {
-	m, err := types.ParseTime(s, mysql.TypeDatetime, types.DefaultFsp)
+	m, err := types.ParseTime(nil, s, mysql.TypeDatetime, types.DefaultFsp)
 	c.Assert(err, IsNil)
 	return m
 }
@@ -498,6 +532,7 @@ func (s *testCodecSuite) TestTime(c *C) {
 		var t types.Time
 		t.Type = mysql.TypeDatetime
 		t.FromPackedUint(v[0].GetUint64())
+		t.TimeZone = nil
 		c.Assert(types.NewDatum(t), DeepEquals, m)
 	}
 
@@ -665,14 +700,14 @@ func (s *testCodecSuite) TestDecimal(c *C) {
 		{uint64(math.MaxUint64), uint64(0), 1},
 		{uint64(0), uint64(math.MaxUint64), -1},
 	}
-
+	sc := new(variable.StatementContext)
 	for _, t := range tblCmp {
 		d1 := types.NewDatum(t.Arg1)
-		dec1, err := d1.ToDecimal()
+		dec1, err := d1.ToDecimal(sc)
 		c.Assert(err, IsNil)
 		d1.SetMysqlDecimal(dec1)
 		d2 := types.NewDatum(t.Arg2)
-		dec2, err := d2.ToDecimal()
+		dec2, err := d2.ToDecimal(sc)
 		c.Assert(err, IsNil)
 		d2.SetMysqlDecimal(dec2)
 
@@ -737,8 +772,8 @@ func (s *testCodecSuite) TestCut(c *C) {
 		},
 
 		{
-			types.MakeDatums(types.Hex{Value: 100}, types.Bit{Value: 100, Width: 8}),
-			types.MakeDatums(int64(100), uint64(100)),
+			types.MakeDatums(types.NewBinaryLiteralFromUint(100, -1), types.NewBinaryLiteralFromUint(100, 4)),
+			types.MakeDatums(uint64(100), uint64(100)),
 		},
 
 		{
@@ -783,5 +818,20 @@ func (s *testCodecSuite) TestCut(c *C) {
 			c.Assert(d, DeepEquals, ed, Commentf("%d:%d %#v", i, j, e))
 		}
 		c.Assert(b, HasLen, 0)
+	}
+}
+
+func (s *testCodecSuite) TestSetRawValues(c *C) {
+	datums := types.MakeDatums(1, "abc", 1.1, []byte("def"))
+	rowData, err := EncodeValue(nil, datums...)
+	c.Assert(err, IsNil)
+	values := make([]types.Datum, 4)
+	err = SetRawValues(rowData, values)
+	c.Assert(err, IsNil)
+	for i, rawVal := range values {
+		c.Assert(rawVal.Kind(), Equals, types.KindRaw)
+		encoded, err1 := EncodeValue(nil, datums[i])
+		c.Assert(err1, IsNil)
+		c.Assert(encoded, BytesEquals, rawVal.GetBytes())
 	}
 }

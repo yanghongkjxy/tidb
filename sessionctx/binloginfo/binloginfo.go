@@ -14,10 +14,14 @@
 package binloginfo
 
 import (
+	"sync"
+	"time"
+
+	log "github.com/Sirupsen/logrus"
 	"github.com/juju/errors"
-	"github.com/ngaut/log"
 	"github.com/pingcap/tidb/context"
 	"github.com/pingcap/tidb/kv"
+	"github.com/pingcap/tidb/terror"
 	"github.com/pingcap/tipb/go-binlog"
 	goctx "golang.org/x/net/context"
 	grpc "google.golang.org/grpc"
@@ -27,73 +31,80 @@ func init() {
 	grpc.EnableTracing = false
 }
 
-// PumpClient is the gRPC client to write binlog, it is opened on server start and never close,
+// pumpClient is the gRPC client to write binlog, it is opened on server start and never close,
 // shared by all sessions.
-var PumpClient binlog.PumpClient
+var pumpClient binlog.PumpClient
+var pumpClientLock sync.RWMutex
 
-// keyType is a dummy type to avoid naming collision in context.
-type keyType int
-
-// String defines a Stringer function for debugging and pretty printing.
-func (k keyType) String() string {
-	if k == schemaVersionKey {
-		return "schema_version"
-	}
-	return "binlog"
+// BinlogInfo contains binlog data and binlog client.
+type BinlogInfo struct {
+	Data   *binlog.Binlog
+	Client binlog.PumpClient
 }
 
-const (
-	schemaVersionKey keyType = 0
-	binlogKey        keyType = 1
-)
-
-// SetSchemaVersion sets schema version to the context.
-func SetSchemaVersion(ctx context.Context, version int64) {
-	ctx.SetValue(schemaVersionKey, version)
+// GetPumpClient gets the pump client instance.
+func GetPumpClient() binlog.PumpClient {
+	pumpClientLock.RLock()
+	client := pumpClient
+	pumpClientLock.RUnlock()
+	return client
 }
 
-// GetSchemaVersion gets schema version in the context.
-func GetSchemaVersion(ctx context.Context) int64 {
-	v, ok := ctx.Value(schemaVersionKey).(int64)
-	if !ok {
-		log.Error("get schema version failed")
-	}
-	return v
+// SetPumpClient sets the pump client instance.
+func SetPumpClient(client binlog.PumpClient) {
+	pumpClientLock.Lock()
+	pumpClient = client
+	pumpClientLock.Unlock()
 }
 
 // GetPrewriteValue gets binlog prewrite value in the context.
 func GetPrewriteValue(ctx context.Context, createIfNotExists bool) *binlog.PrewriteValue {
-	v, ok := ctx.Value(binlogKey).(*binlog.PrewriteValue)
+	vars := ctx.GetSessionVars()
+	v, ok := vars.TxnCtx.Binlog.(*binlog.PrewriteValue)
 	if !ok && createIfNotExists {
-		schemaVer := GetSchemaVersion(ctx)
+		schemaVer := ctx.GetSessionVars().TxnCtx.SchemaVersion
 		v = &binlog.PrewriteValue{SchemaVersion: schemaVer}
-		ctx.SetValue(binlogKey, v)
+		vars.TxnCtx.Binlog = v
 	}
 	return v
 }
 
 // WriteBinlog writes a binlog to Pump.
-func WriteBinlog(bin *binlog.Binlog, clusterID uint64) error {
-	commitData, _ := bin.Marshal()
-	req := &binlog.WriteBinlogReq{ClusterID: clusterID, Payload: commitData}
-	resp, err := PumpClient.WriteBinlog(goctx.Background(), req)
-	if err == nil && resp.Errmsg != "" {
-		err = errors.New(resp.Errmsg)
+func (info *BinlogInfo) WriteBinlog(clusterID uint64) error {
+	commitData, err := info.Data.Marshal()
+	if err != nil {
+		return errors.Trace(err)
 	}
-	return errors.Trace(err)
+	req := &binlog.WriteBinlogReq{ClusterID: clusterID, Payload: commitData}
+
+	// Retry many times because we may raise CRITICAL error here.
+	for i := 0; i < 20; i++ {
+		var resp *binlog.WriteBinlogResp
+		resp, err = info.Client.WriteBinlog(goctx.Background(), req)
+		if err == nil && resp.Errmsg != "" {
+			err = errors.New(resp.Errmsg)
+		}
+		if err == nil {
+			return nil
+		}
+		log.Errorf("write binlog error %v", err)
+		time.Sleep(time.Second)
+	}
+	return terror.ErrCritical.GenByArgs(err)
 }
 
 // SetDDLBinlog sets DDL binlog in the kv.Transaction.
-func SetDDLBinlog(txn kv.Transaction, jobID int64, ddlQuery string) {
-	bin := &binlog.Binlog{
-		Tp:       binlog.BinlogType_Prewrite,
-		DdlJobId: jobID,
-		DdlQuery: []byte(ddlQuery),
+func SetDDLBinlog(client interface{}, txn kv.Transaction, jobID int64, ddlQuery string) {
+	if client == nil {
+		return
 	}
-	txn.SetOption(kv.BinlogData, bin)
-}
-
-// ClearBinlog clears binlog in the Context.
-func ClearBinlog(ctx context.Context) {
-	ctx.ClearValue(binlogKey)
+	info := &BinlogInfo{
+		Data: &binlog.Binlog{
+			Tp:       binlog.BinlogType_Prewrite,
+			DdlJobId: jobID,
+			DdlQuery: []byte(ddlQuery),
+		},
+		Client: client.(binlog.PumpClient),
+	}
+	txn.SetOption(kv.BinlogInfo, info)
 }

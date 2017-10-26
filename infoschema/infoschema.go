@@ -17,41 +17,43 @@ import (
 	"sort"
 	"sync/atomic"
 
-	"github.com/juju/errors"
 	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/meta/autoid"
 	"github.com/pingcap/tidb/model"
 	"github.com/pingcap/tidb/mysql"
-	"github.com/pingcap/tidb/perfschema"
 	"github.com/pingcap/tidb/table"
 	"github.com/pingcap/tidb/terror"
 )
 
 var (
 	// ErrDatabaseDropExists returns for dropping a non-existent database.
-	ErrDatabaseDropExists = terror.ClassSchema.New(codeDBDropExists, "database doesn't exist")
+	ErrDatabaseDropExists = terror.ClassSchema.New(codeDBDropExists, "Can't drop database '%s'; database doesn't exist")
 	// ErrDatabaseNotExists returns for database not exists.
-	ErrDatabaseNotExists = terror.ClassSchema.New(codeDatabaseNotExists, "database not exists")
+	ErrDatabaseNotExists = terror.ClassSchema.New(codeDatabaseNotExists, "Unknown database '%s'")
 	// ErrTableNotExists returns for table not exists.
-	ErrTableNotExists = terror.ClassSchema.New(codeTableNotExists, "table not exists")
+	ErrTableNotExists = terror.ClassSchema.New(codeTableNotExists, "Table '%s.%s' doesn't exist")
 	// ErrColumnNotExists returns for column not exists.
-	ErrColumnNotExists = terror.ClassSchema.New(codeColumnNotExists, "field not exists")
+	ErrColumnNotExists = terror.ClassSchema.New(codeColumnNotExists, "Unknown column '%s' in '%s'")
 	// ErrForeignKeyNotMatch returns for foreign key not match.
-	ErrForeignKeyNotMatch = terror.ClassSchema.New(codeCannotAddForeign, "foreign key not match")
-	// ErrForeignKeyExists returns for foreign key exists.
-	ErrForeignKeyExists = terror.ClassSchema.New(codeCannotAddForeign, "foreign key already exists")
+	ErrForeignKeyNotMatch = terror.ClassSchema.New(codeWrongFkDef, "Incorrect foreign key definition for '%s': Key reference and table reference don't match")
+	// ErrCannotAddForeign returns for foreign key exists.
+	ErrCannotAddForeign = terror.ClassSchema.New(codeCannotAddForeign, "Cannot add foreign key constraint")
 	// ErrForeignKeyNotExists returns for foreign key not exists.
-	ErrForeignKeyNotExists = terror.ClassSchema.New(codeForeignKeyNotExists, "foreign key not exists")
+	ErrForeignKeyNotExists = terror.ClassSchema.New(codeForeignKeyNotExists, "Can't DROP '%s'; check that column/key exists")
 	// ErrDatabaseExists returns for database already exists.
-	ErrDatabaseExists = terror.ClassSchema.New(codeDatabaseExists, "database already exists")
+	ErrDatabaseExists = terror.ClassSchema.New(codeDatabaseExists, "Can't create database '%s'; database exists")
 	// ErrTableExists returns for table already exists.
-	ErrTableExists = terror.ClassSchema.New(codeTableExists, "table already exists")
+	ErrTableExists = terror.ClassSchema.New(codeTableExists, "Table '%s' already exists")
 	// ErrTableDropExists returns for dropping a non-existent table.
-	ErrTableDropExists = terror.ClassSchema.New(codeBadTable, "unknown table")
+	ErrTableDropExists = terror.ClassSchema.New(codeBadTable, "Unknown table '%s'")
 	// ErrColumnExists returns for column already exists.
-	ErrColumnExists = terror.ClassSchema.New(codeColumnExists, "Duplicate column")
+	ErrColumnExists = terror.ClassSchema.New(codeColumnExists, "Duplicate column name '%s'")
 	// ErrIndexExists returns for index already exists.
 	ErrIndexExists = terror.ClassSchema.New(codeIndexExists, "Duplicate Index")
+	// ErrMultiplePriKey returns for multiple primary keys.
+	ErrMultiplePriKey = terror.ClassSchema.New(codeMultiplePriKey, "Multiple primary key defined")
+	// ErrTooManyKeyParts returns for too many key parts.
+	ErrTooManyKeyParts = terror.ClassSchema.New(codeTooManyKeyParts, "Too many key parts specified; max %d parts allowed")
 )
 
 // InfoSchema is the interface used to retrieve the schema information.
@@ -115,7 +117,7 @@ type infoSchema struct {
 	// sortedTablesBuckets is a slice of sortedTables, a table's bucket index is (tableID % bucketCount).
 	sortedTablesBuckets []sortedTables
 
-	// We should check version when change schema.
+	// schemaMetaVersion is the version of schema, and we should check version when change schema.
 	schemaMetaVersion int64
 }
 
@@ -167,7 +169,7 @@ func (is *infoSchema) TableByName(schema, table model.CIStr) (t table.Table, err
 			return
 		}
 	}
-	return nil, ErrTableNotExists.Gen("table %s.%s does not exist", schema, table)
+	return nil, ErrTableNotExists.GenByArgs(schema, table)
 }
 
 func (is *infoSchema) TableExists(schema, table model.CIStr) bool {
@@ -239,26 +241,16 @@ func (is *infoSchema) Clone() (result []*model.DBInfo) {
 
 // Handle handles information schema, including getting and setting.
 type Handle struct {
-	value      atomic.Value
-	store      kv.Storage
-	perfHandle perfschema.PerfSchema
+	value atomic.Value
+	store kv.Storage
 }
 
 // NewHandle creates a new Handle.
-func NewHandle(store kv.Storage) (*Handle, error) {
+func NewHandle(store kv.Storage) *Handle {
 	h := &Handle{
 		store: store,
 	}
-	// init memory tables
-	var err error
-	h.perfHandle, err = perfschema.NewPerfHandle()
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	return h, nil
+	return h
 }
 
 // Get gets information schema from Handle.
@@ -268,16 +260,10 @@ func (h *Handle) Get() InfoSchema {
 	return schema
 }
 
-// GetPerfHandle gets performance schema from handle.
-func (h *Handle) GetPerfHandle() perfschema.PerfSchema {
-	return h.perfHandle
-}
-
 // EmptyClone creates a new Handle with the same store and memSchema, but the value is not set.
 func (h *Handle) EmptyClone() *Handle {
 	newHandle := &Handle{
-		store:      h.store,
-		perfHandle: h.perfHandle,
+		store: h.store,
 	}
 	return newHandle
 }
@@ -291,12 +277,15 @@ const (
 
 	codeCannotAddForeign    = 1215
 	codeForeignKeyNotExists = 1091
+	codeWrongFkDef          = 1239
 
-	codeDatabaseExists = 1007
-	codeTableExists    = 1050
-	codeBadTable       = 1051
-	codeColumnExists   = 1060
-	codeIndexExists    = 1831
+	codeDatabaseExists  = 1007
+	codeTableExists     = 1050
+	codeBadTable        = 1051
+	codeColumnExists    = 1060
+	codeIndexExists     = 1831
+	codeMultiplePriKey  = 1068
+	codeTooManyKeyParts = 1070
 )
 
 func init() {
@@ -306,12 +295,15 @@ func init() {
 		codeTableNotExists:      mysql.ErrNoSuchTable,
 		codeColumnNotExists:     mysql.ErrBadField,
 		codeCannotAddForeign:    mysql.ErrCannotAddForeign,
+		codeWrongFkDef:          mysql.ErrWrongFkDef,
 		codeForeignKeyNotExists: mysql.ErrCantDropFieldOrKey,
 		codeDatabaseExists:      mysql.ErrDBCreateExists,
 		codeTableExists:         mysql.ErrTableExists,
 		codeBadTable:            mysql.ErrBadTable,
 		codeColumnExists:        mysql.ErrDupFieldName,
 		codeIndexExists:         mysql.ErrDupIndex,
+		codeMultiplePriKey:      mysql.ErrMultiplePriKey,
+		codeTooManyKeyParts:     mysql.ErrTooManyKeyParts,
 	}
 	terror.ErrClassToMySQLCodes[terror.ClassSchema] = schemaMySQLErrCodes
 	initInfoSchemaDB()

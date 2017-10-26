@@ -42,14 +42,6 @@ func createMemStore(suffix int) kv.Storage {
 	return store
 }
 
-func (t *testMvccSuite) addDirtyData() {
-	engineDB := t.s.(*dbStore).db
-	b := engineDB.NewBatch()
-	b.Put([]byte("\xf0dirty"), []byte("testvalue"))
-	b.Put([]byte("\x00dirty"), []byte("testvalue"))
-	engineDB.Commit(b)
-}
-
 func (t *testMvccSuite) TestMvccEncode(c *C) {
 	encodedKey1 := MvccEncodeVersionKey([]byte("A"), kv.Version{Ver: 1})
 	encodedKey2 := MvccEncodeVersionKey([]byte("A"), kv.Version{Ver: 2})
@@ -82,7 +74,6 @@ func (t *testMvccSuite) scanRawEngine(c *C, f func([]byte, []byte)) {
 func (t *testMvccSuite) SetUpTest(c *C) {
 	// create new store
 	t.s = createMemStore(time.Now().Nanosecond())
-	t.addDirtyData()
 	// insert test data
 	txn, err := t.s.Begin()
 	c.Assert(err, IsNil)
@@ -92,6 +83,10 @@ func (t *testMvccSuite) SetUpTest(c *C) {
 		c.Assert(err, IsNil)
 	}
 	txn.Commit()
+}
+
+func (t *testMvccSuite) TearDownSuite(c *C) {
+	t.s.Close()
 }
 
 func (t *testMvccSuite) TestMvccGet(c *C) {

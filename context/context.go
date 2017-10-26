@@ -18,21 +18,26 @@ import (
 
 	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/sessionctx/variable"
+	"github.com/pingcap/tidb/util"
+	"github.com/pingcap/tidb/util/kvcache"
+	goctx "golang.org/x/net/context"
 )
 
 // Context is an interface for transaction and executive args environment.
 type Context interface {
-	// GetTxn gets a transaction for further execution.
-	GetTxn(forceNew bool) (kv.Transaction, error)
+	// NewTxn creates a new transaction for further execution.
+	// If old transaction is valid, it is committed first.
+	// It's used in BEGIN statement and DDL statements to commit old transaction.
+	NewTxn() error
+
+	// Txn returns the current transaction which is created before executing a statement.
+	Txn() kv.Transaction
+
+	// GoCtx returns the standard context.Context which is bound with current transaction.
+	GoCtx() goctx.Context
 
 	// GetClient gets a kv.Client.
 	GetClient() kv.Client
-
-	// RollbackTxn rolls back the current transaction.
-	RollbackTxn() error
-
-	// CommitTxn commits the current transaction.
-	CommitTxn() error
 
 	// SetValue saves a value associated with this context for key.
 	SetValue(key fmt.Stringer, value interface{})
@@ -44,6 +49,27 @@ type Context interface {
 	ClearValue(key fmt.Stringer)
 
 	GetSessionVars() *variable.SessionVars
+
+	GetSessionManager() util.SessionManager
+
+	// RefreshTxnCtx commits old transaction without retry,
+	// and creates a new transaction.
+	// now just for load data and batch insert.
+	RefreshTxnCtx() error
+
+	// ActivePendingTxn receives the pending transaction from the transaction channel.
+	// It should be called right before we builds an executor.
+	ActivePendingTxn() error
+
+	// InitTxnWithStartTS initializes a transaction with startTS.
+	// It should be called right before we builds an executor.
+	InitTxnWithStartTS(startTS uint64) error
+
+	// GetStore returns the store of session.
+	GetStore() kv.Storage
+
+	// PreparedPlanCache returns the cache of the physical plan
+	PreparedPlanCache() *kvcache.SimpleLRUCache
 }
 
 type basicCtxType int

@@ -16,14 +16,17 @@ package types
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"time"
 
 	"github.com/juju/errors"
 	. "github.com/pingcap/check"
 	"github.com/pingcap/tidb/mysql"
+	"github.com/pingcap/tidb/sessionctx/variable"
 	"github.com/pingcap/tidb/terror"
 	"github.com/pingcap/tidb/util/charset"
 	"github.com/pingcap/tidb/util/testleak"
+	"github.com/pingcap/tidb/util/types/json"
 )
 
 var _ = Suite(&testTypeConvertSuite{})
@@ -32,6 +35,18 @@ type testTypeConvertSuite struct {
 }
 
 type invalidMockType struct {
+}
+
+// Convert converts the val with type tp.
+func Convert(val interface{}, target *FieldType) (v interface{}, err error) {
+	d := NewDatum(val)
+	sc := new(variable.StatementContext)
+	sc.TimeZone = time.UTC
+	ret, err := d.ConvertTo(sc, target)
+	if err != nil {
+		return ret.GetValue(), errors.Trace(err)
+	}
+	return ret.GetValue(), nil
 }
 
 func (s *testTypeConvertSuite) TestConvertType(c *C) {
@@ -60,21 +75,21 @@ func (s *testTypeConvertSuite) TestConvertType(c *C) {
 	ft.Flen = 5
 	ft.Decimal = 2
 	v, err = Convert(999.999, ft)
-	c.Assert(err, IsNil)
+	c.Assert(err, NotNil)
 	c.Assert(v, Equals, float32(999.99))
 
 	ft = NewFieldType(mysql.TypeFloat)
 	ft.Flen = 5
 	ft.Decimal = 2
 	v, err = Convert(-999.999, ft)
-	c.Assert(err, IsNil)
+	c.Assert(err, NotNil)
 	c.Assert(v, Equals, float32(-999.99))
 
 	ft = NewFieldType(mysql.TypeFloat)
 	ft.Flen = 5
 	ft.Decimal = 2
 	v, err = Convert(1111.11, ft)
-	c.Assert(err, IsNil)
+	c.Assert(err, NotNil)
 	c.Assert(v, Equals, float32(999.99))
 
 	ft = NewFieldType(mysql.TypeFloat)
@@ -87,7 +102,7 @@ func (s *testTypeConvertSuite) TestConvertType(c *C) {
 	ft = NewFieldType(mysql.TypeFloat)
 	ft.Flen = 5
 	ft.Decimal = 2
-	v, err = Convert(999.915, ft)
+	v, err = Convert(999.914, ft)
 	c.Assert(err, IsNil)
 	c.Assert(v, Equals, float32(999.91))
 
@@ -141,7 +156,7 @@ func (s *testTypeConvertSuite) TestConvertType(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(vv.(Duration).String(), Equals, "10:11:12.1")
 
-	vt, err := ParseTime("2010-10-10 10:11:11.12345", mysql.TypeTimestamp, 2)
+	vt, err := ParseTime(nil, "2010-10-10 10:11:11.12345", mysql.TypeTimestamp, 2)
 	c.Assert(vt.String(), Equals, "2010-10-10 10:11:11.12")
 	c.Assert(err, IsNil)
 	v, err = Convert(vt, ft)
@@ -159,6 +174,13 @@ func (s *testTypeConvertSuite) TestConvertType(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(vv.(Time).String(), Equals, "2010-10-10 10:11:11.1")
 
+	// For mysql.TypeNewDate.
+	ft = NewFieldType(mysql.TypeNewDate)
+	ft.Decimal = 3
+	v, err = Convert("2010-10-10 10:11:11.12345", ft)
+	c.Assert(err, IsNil)
+	c.Assert(v.(Time).String(), Equals, "2010-10-10 10:11:11.123")
+
 	// For TypeLonglong
 	ft = NewFieldType(mysql.TypeLonglong)
 	v, err = Convert("100", ft)
@@ -169,26 +191,33 @@ func (s *testTypeConvertSuite) TestConvertType(c *C) {
 	v, err = Convert("100", ft)
 	c.Assert(err, IsNil)
 	c.Assert(v, Equals, uint64(100))
+	// issue 3470
+	ft = NewFieldType(mysql.TypeLonglong)
+	v, err = Convert(Duration{Duration: time.Duration(12*time.Hour + 59*time.Minute + 59*time.Second + 555*time.Millisecond), Fsp: 3}, ft)
+	c.Assert(err, IsNil)
+	c.Assert(v, Equals, int64(130000))
+	v, err = Convert(Time{
+		Time: FromDate(2017, 1, 1, 12, 59, 59, 555000),
+		Type: mysql.TypeDatetime,
+		Fsp:  MaxFsp}, ft)
+	c.Assert(err, IsNil)
+	c.Assert(v, Equals, int64(20170101130000))
 
 	// For TypeBit
 	ft = NewFieldType(mysql.TypeBit)
-	ft.Flen = 8
+	ft.Flen = 24 // 3 bytes.
 	v, err = Convert("100", ft)
 	c.Assert(err, IsNil)
-	c.Assert(v, Equals, Bit{Value: 100, Width: 8})
+	c.Assert(v, DeepEquals, NewBinaryLiteralFromUint(3223600, 3))
 
-	v, err = Convert(Hex{Value: 100}, ft)
+	v, err = Convert(NewBinaryLiteralFromUint(100, -1), ft)
 	c.Assert(err, IsNil)
-	c.Assert(v, Equals, Bit{Value: 100, Width: 8})
-
-	v, err = Convert(Bit{Value: 100, Width: 8}, ft)
-	c.Assert(err, IsNil)
-	c.Assert(v, Equals, Bit{Value: 100, Width: 8})
+	c.Assert(v, DeepEquals, NewBinaryLiteralFromUint(100, 3))
 
 	ft.Flen = 1
 	v, err = Convert(1, ft)
 	c.Assert(err, IsNil)
-	c.Assert(v, Equals, Bit{Value: 1, Width: 1})
+	c.Assert(v, DeepEquals, NewBinaryLiteralFromUint(1, 1))
 
 	_, err = Convert(2, ft)
 	c.Assert(err, NotNil)
@@ -214,9 +243,20 @@ func (s *testTypeConvertSuite) TestConvertType(c *C) {
 	c.Assert(terror.ErrorEqual(err, ErrOverflow), IsTrue)
 	c.Assert(v.(*MyDecimal).String(), Equals, "-9999.9999")
 
+	// Test Datum.ToDecimal with bad number.
+	d := NewDatum("hello")
+	sc := new(variable.StatementContext)
+	v, err = d.ToDecimal(sc)
+	c.Assert(terror.ErrorEqual(err, ErrBadNumber), IsTrue)
+
+	sc.IgnoreTruncate = true
+	v, err = d.ToDecimal(sc)
+	c.Assert(err, IsNil)
+	c.Assert(v.(*MyDecimal).String(), Equals, "0")
+
 	// For TypeYear
 	ft = NewFieldType(mysql.TypeYear)
-	v, err = Convert("2015-11-11", ft)
+	v, err = Convert("2015", ft)
 	c.Assert(err, IsNil)
 	c.Assert(v, Equals, int64(2015))
 	v, err = Convert(2015, ft)
@@ -224,7 +264,7 @@ func (s *testTypeConvertSuite) TestConvertType(c *C) {
 	c.Assert(v, Equals, int64(2015))
 	v, err = Convert(1800, ft)
 	c.Assert(err, NotNil)
-	dt, err := ParseDate("2015-11-11")
+	dt, err := ParseDate(nil, "2015-11-11")
 	c.Assert(err, IsNil)
 	v, err = Convert(dt, ft)
 	c.Assert(v, Equals, int64(2015))
@@ -243,8 +283,9 @@ func (s *testTypeConvertSuite) TestConvertType(c *C) {
 	c.Assert(v, DeepEquals, Enum{Name: "b", Value: 2})
 	_, err = Convert("d", ft)
 	c.Assert(err, NotNil)
-	_, err = Convert(4, ft)
-	c.Assert(err, NotNil)
+	v, err = Convert(4, ft)
+	c.Assert(terror.ErrorEqual(err, ErrTruncated), IsTrue)
+	c.Assert(v, DeepEquals, Enum{})
 
 	ft = NewFieldType(mysql.TypeSet)
 	ft.Elems = []string{"a", "b", "c"}
@@ -280,12 +321,12 @@ func (s *testTypeConvertSuite) TestConvertToString(c *C) {
 	testToString(c, float32(1.6), "1.6")
 	testToString(c, float64(-0.6), "-0.6")
 	testToString(c, []byte{1}, "\x01")
-	testToString(c, Hex{Value: 0x4D7953514C}, "MySQL")
-	testToString(c, Bit{Value: 0x41, Width: 8}, "A")
+	testToString(c, NewBinaryLiteralFromUint(0x4D7953514C, -1), "MySQL")
+	testToString(c, NewBinaryLiteralFromUint(0x41, -1), "A")
 	testToString(c, Enum{Name: "a", Value: 1}, "a")
 	testToString(c, Set{Name: "a", Value: 1}, "a")
 
-	t, err := ParseTime("2011-11-10 11:11:11.999999", mysql.TypeTimestamp, 6)
+	t, err := ParseTime(nil, "2011-11-10 11:11:11.999999", mysql.TypeTimestamp, 6)
 	c.Assert(err, IsNil)
 	testToString(c, t, "2011-11-10 11:11:11.999999")
 
@@ -304,7 +345,7 @@ func (s *testTypeConvertSuite) TestConvertToString(c *C) {
 	c.Assert(err, NotNil)
 
 	// test truncate
-	cases := []struct {
+	tests := []struct {
 		flen    int
 		charset string
 		input   string
@@ -318,72 +359,101 @@ func (s *testTypeConvertSuite) TestConvertToString(c *C) {
 		{12, "binary", "你好，世界", "你好，世"},
 		{0, "binary", "你好，世界", ""},
 	}
-	for _, ca := range cases {
+	for _, tt := range tests {
 		ft = NewFieldType(mysql.TypeVarchar)
-		ft.Flen = ca.flen
-		ft.Charset = ca.charset
-		inputDatum := NewStringDatum(ca.input)
-		outputDatum, err := inputDatum.ConvertTo(ft)
-		if ca.input != ca.output {
+		ft.Flen = tt.flen
+		ft.Charset = tt.charset
+		inputDatum := NewStringDatum(tt.input)
+		sc := new(variable.StatementContext)
+		outputDatum, err := inputDatum.ConvertTo(sc, ft)
+		if tt.input != tt.output {
 			c.Assert(ErrDataTooLong.Equal(err), IsTrue)
 		} else {
 			c.Assert(err, IsNil)
 		}
-		c.Assert(outputDatum.GetString(), Equals, ca.output)
+		c.Assert(outputDatum.GetString(), Equals, tt.output)
 	}
 }
 
-func testStrToInt(c *C, str string, expect int64) {
-	b, _ := StrToInt(str)
-	c.Assert(b, Equals, expect)
+func testStrToInt(c *C, str string, expect int64, truncateAsErr bool, expectErr error) {
+	sc := new(variable.StatementContext)
+	sc.IgnoreTruncate = !truncateAsErr
+	val, err := StrToInt(sc, str)
+	if expectErr != nil {
+		c.Assert(terror.ErrorEqual(err, expectErr), IsTrue)
+	} else {
+		c.Assert(err, IsNil)
+		c.Assert(val, Equals, expect)
+	}
 }
 
-func testStrToUint(c *C, str string, expect uint64) {
-	d := NewDatum(str)
-	d, _ = d.convertToUint(NewFieldType(mysql.TypeLonglong))
-	c.Assert(d.GetUint64(), Equals, expect)
+func testStrToUint(c *C, str string, expect uint64, truncateAsErr bool, expectErr error) {
+	sc := new(variable.StatementContext)
+	sc.IgnoreTruncate = !truncateAsErr
+	val, err := StrToUint(sc, str)
+	if expectErr != nil {
+		c.Assert(terror.ErrorEqual(err, expectErr), IsTrue)
+	} else {
+		c.Assert(err, IsNil)
+		c.Assert(val, Equals, expect)
+	}
 }
 
-func testStrToFloat(c *C, str string, expect float64) {
-	b, _ := StrToFloat(str)
-	c.Assert(b, Equals, expect)
+func testStrToFloat(c *C, str string, expect float64, truncateAsErr bool, expectErr error) {
+	sc := new(variable.StatementContext)
+	sc.IgnoreTruncate = !truncateAsErr
+	val, err := StrToFloat(sc, str)
+	if expectErr != nil {
+		c.Assert(terror.ErrorEqual(err, expectErr), IsTrue)
+	} else {
+		c.Assert(err, IsNil)
+		c.Assert(val, Equals, expect)
+	}
 }
 
 func (s *testTypeConvertSuite) TestStrToNum(c *C) {
 	defer testleak.AfterTest(c)()
-	testStrToInt(c, "0", 0)
-	testStrToInt(c, "-1", -1)
-	testStrToInt(c, "100", 100)
-	testStrToInt(c, "65.0", 65)
-	testStrToInt(c, "xx", 0)
-	testStrToInt(c, "11xx", 11)
-	testStrToInt(c, "xx11", 0)
+	testStrToInt(c, "0", 0, true, nil)
+	testStrToInt(c, "-1", -1, true, nil)
+	testStrToInt(c, "100", 100, true, nil)
+	testStrToInt(c, "65.0", 65, false, nil)
+	testStrToInt(c, "65.0", 65, true, nil)
+	testStrToInt(c, "", 0, false, nil)
+	testStrToInt(c, "", 0, true, ErrTruncated)
+	testStrToInt(c, "xx", 0, true, ErrTruncated)
+	testStrToInt(c, "xx", 0, false, nil)
+	testStrToInt(c, "11xx", 11, true, ErrTruncated)
+	testStrToInt(c, "11xx", 11, false, nil)
+	testStrToInt(c, "xx11", 0, false, nil)
 
-	testStrToUint(c, "0", 0)
-	testStrToUint(c, "", 0)
-	testStrToUint(c, "-1", 0xffffffffffffffff)
-	testStrToUint(c, "100", 100)
-	testStrToUint(c, "+100", 100)
-	testStrToUint(c, "65.0", 65)
-	testStrToUint(c, "xx", 0)
+	testStrToUint(c, "0", 0, true, nil)
+	testStrToUint(c, "", 0, false, nil)
+	testStrToUint(c, "", 0, false, nil)
+	testStrToUint(c, "-1", 0xffffffffffffffff, false, ErrOverflow)
+	testStrToUint(c, "100", 100, true, nil)
+	testStrToUint(c, "+100", 100, true, nil)
+	testStrToUint(c, "65.0", 65, true, nil)
+	testStrToUint(c, "xx", 0, true, ErrTruncated)
+	testStrToUint(c, "11xx", 11, true, ErrTruncated)
+	testStrToUint(c, "xx11", 0, true, ErrTruncated)
+
 	// TODO: makes StrToFloat return truncated value instead of zero to make it pass.
-	//	testStrToUint(c, "11xx", 11)
-	testStrToUint(c, "xx11", 0)
-
-	testStrToFloat(c, "", 0)
-	testStrToFloat(c, "-1", -1.0)
-	testStrToFloat(c, "1.11", 1.11)
-	testStrToFloat(c, "1.11.00", 1.11)
-	testStrToFloat(c, "xx", 0.0)
-	testStrToFloat(c, "0x00", 0.0)
-	testStrToFloat(c, "11.xx", 11.0)
-	testStrToFloat(c, "xx.11", 0.0)
+	testStrToFloat(c, "", 0, true, ErrTruncated)
+	testStrToFloat(c, "-1", -1.0, true, nil)
+	testStrToFloat(c, "1.11", 1.11, true, nil)
+	testStrToFloat(c, "1.11.00", 1.11, false, nil)
+	testStrToFloat(c, "1.11.00", 1.11, true, ErrTruncated)
+	testStrToFloat(c, "xx", 0.0, false, nil)
+	testStrToFloat(c, "0x00", 0.0, false, nil)
+	testStrToFloat(c, "11.xx", 11.0, false, nil)
+	testStrToFloat(c, "11.xx", 11.0, true, ErrTruncated)
+	testStrToFloat(c, "xx.11", 0.0, false, nil)
 }
 
 func (s *testTypeConvertSuite) TestFieldTypeToStr(c *C) {
 	defer testleak.AfterTest(c)()
-	v := TypeToStr(mysql.TypeDecimal, "not binary")
-	c.Assert(v, Equals, type2Str[mysql.TypeDecimal])
+	v := TypeToStr(mysql.TypeUnspecified, "not binary")
+	c.Assert(v, Equals, type2Str[mysql.TypeUnspecified])
 	v = TypeToStr(mysql.TypeBlob, charset.CharsetBin)
 	c.Assert(v, Equals, "blob")
 	v = TypeToStr(mysql.TypeString, charset.CharsetBin)
@@ -396,7 +466,9 @@ func accept(c *C, tp byte, value interface{}, unsigned bool, expected string) {
 		ft.Flag |= mysql.UnsignedFlag
 	}
 	d := NewDatum(value)
-	casted, err := d.ConvertTo(ft)
+	sc := new(variable.StatementContext)
+	sc.IgnoreTruncate = true
+	casted, err := d.ConvertTo(sc, ft)
 	c.Assert(err, IsNil, Commentf("%v", ft))
 	if casted.IsNull() {
 		c.Assert(expected, Equals, "<nil>")
@@ -421,7 +493,8 @@ func deny(c *C, tp byte, value interface{}, unsigned bool, expected string) {
 		ft.Flag |= mysql.UnsignedFlag
 	}
 	d := NewDatum(value)
-	casted, err := d.ConvertTo(ft)
+	sc := new(variable.StatementContext)
+	casted, err := d.ConvertTo(sc, ft)
 	c.Assert(err, NotNil)
 	if casted.IsNull() {
 		c.Assert(expected, Equals, "<nil>")
@@ -451,7 +524,7 @@ func (s *testTypeConvertSuite) TestConvert(c *C) {
 	signedAccept(c, mysql.TypeTiny, -128, "-128")
 	signedAccept(c, mysql.TypeTiny, 127, "127")
 	signedDeny(c, mysql.TypeTiny, 128, "127")
-	unsignedDeny(c, mysql.TypeTiny, -1, "0")
+	unsignedDeny(c, mysql.TypeTiny, -1, "255")
 	unsignedAccept(c, mysql.TypeTiny, 0, "0")
 	unsignedAccept(c, mysql.TypeTiny, 255, "255")
 	unsignedDeny(c, mysql.TypeTiny, 256, "255")
@@ -460,7 +533,7 @@ func (s *testTypeConvertSuite) TestConvert(c *C) {
 	signedAccept(c, mysql.TypeShort, int64(math.MinInt16), strvalue(int64(math.MinInt16)))
 	signedAccept(c, mysql.TypeShort, int64(math.MaxInt16), strvalue(int64(math.MaxInt16)))
 	signedDeny(c, mysql.TypeShort, int64(math.MaxInt16)+1, strvalue(int64(math.MaxInt16)))
-	unsignedDeny(c, mysql.TypeShort, -1, "0")
+	unsignedDeny(c, mysql.TypeShort, -1, "65535")
 	unsignedAccept(c, mysql.TypeShort, 0, "0")
 	unsignedAccept(c, mysql.TypeShort, uint64(math.MaxUint16), strvalue(uint64(math.MaxUint16)))
 	unsignedDeny(c, mysql.TypeShort, uint64(math.MaxUint16)+1, strvalue(uint64(math.MaxUint16)))
@@ -469,7 +542,7 @@ func (s *testTypeConvertSuite) TestConvert(c *C) {
 	signedAccept(c, mysql.TypeInt24, -1<<23, strvalue(-1<<23))
 	signedAccept(c, mysql.TypeInt24, 1<<23-1, strvalue(1<<23-1))
 	signedDeny(c, mysql.TypeInt24, 1<<23, strvalue(1<<23-1))
-	unsignedDeny(c, mysql.TypeInt24, -1, "0")
+	unsignedDeny(c, mysql.TypeInt24, -1, "16777215")
 	unsignedAccept(c, mysql.TypeInt24, 0, "0")
 	unsignedAccept(c, mysql.TypeInt24, 1<<24-1, strvalue(1<<24-1))
 	unsignedDeny(c, mysql.TypeInt24, 1<<24, strvalue(1<<24-1))
@@ -479,7 +552,8 @@ func (s *testTypeConvertSuite) TestConvert(c *C) {
 	signedAccept(c, mysql.TypeLong, int64(math.MaxInt32), strvalue(int64(math.MaxInt32)))
 	signedDeny(c, mysql.TypeLong, uint64(math.MaxUint64), strvalue(uint64(math.MaxInt32)))
 	signedDeny(c, mysql.TypeLong, int64(math.MaxInt32)+1, strvalue(int64(math.MaxInt32)))
-	unsignedDeny(c, mysql.TypeLong, -1, "0")
+	signedDeny(c, mysql.TypeLong, "1343545435346432587475", strvalue(int64(math.MaxInt32)))
+	unsignedDeny(c, mysql.TypeLong, -1, "4294967295")
 	unsignedAccept(c, mysql.TypeLong, 0, "0")
 	unsignedAccept(c, mysql.TypeLong, uint64(math.MaxUint32), strvalue(uint64(math.MaxUint32)))
 	unsignedDeny(c, mysql.TypeLong, uint64(math.MaxUint32)+1, strvalue(uint64(math.MaxUint32)))
@@ -488,7 +562,7 @@ func (s *testTypeConvertSuite) TestConvert(c *C) {
 	signedAccept(c, mysql.TypeLonglong, int64(math.MinInt64), strvalue(int64(math.MinInt64)))
 	signedAccept(c, mysql.TypeLonglong, int64(math.MaxInt64), strvalue(int64(math.MaxInt64)))
 	signedDeny(c, mysql.TypeLonglong, math.MaxInt64*1.1, strvalue(int64(math.MaxInt64)))
-	unsignedDeny(c, mysql.TypeLonglong, -1, "0")
+	unsignedAccept(c, mysql.TypeLonglong, -1, "18446744073709551615")
 	unsignedAccept(c, mysql.TypeLonglong, 0, "0")
 	unsignedAccept(c, mysql.TypeLonglong, uint64(math.MaxUint64), strvalue(uint64(math.MaxUint64)))
 	unsignedDeny(c, mysql.TypeLonglong, math.MaxUint64*1.1, strvalue(uint64(math.MaxUint64)))
@@ -496,13 +570,23 @@ func (s *testTypeConvertSuite) TestConvert(c *C) {
 	// integer from string
 	signedAccept(c, mysql.TypeLong, "	  234  ", "234")
 	signedAccept(c, mysql.TypeLong, " 2.35e3  ", "2350")
-	signedAccept(c, mysql.TypeLong, " +2.51 ", "3")
-	signedAccept(c, mysql.TypeLong, " -3.58", "-4")
+	signedAccept(c, mysql.TypeLong, " 2.e3  ", "2000")
+	signedAccept(c, mysql.TypeLong, " -2.e3  ", "-2000")
+	signedAccept(c, mysql.TypeLong, " 2e2  ", "200")
+	signedAccept(c, mysql.TypeLong, " 0.002e3  ", "2")
+	signedAccept(c, mysql.TypeLong, " .002e3  ", "2")
+	signedAccept(c, mysql.TypeLong, " 20e-2  ", "0")
+	signedAccept(c, mysql.TypeLong, " -20e-2  ", "0")
+	signedAccept(c, mysql.TypeLong, " +2.51 ", "2")
+	signedAccept(c, mysql.TypeLong, " -3.58", "-3")
 	signedDeny(c, mysql.TypeLong, " 1a ", "1")
+	signedDeny(c, mysql.TypeLong, " +1+ ", "1")
 
 	// integer from float
 	signedAccept(c, mysql.TypeLong, 234.5456, "235")
 	signedAccept(c, mysql.TypeLong, -23.45, "-23")
+	unsignedAccept(c, mysql.TypeLonglong, 234.5456, "235")
+	unsignedDeny(c, mysql.TypeLonglong, -23.45, "18446744073709551593")
 
 	// float from string
 	signedAccept(c, mysql.TypeFloat, "23.523", "23.523")
@@ -513,6 +597,9 @@ func (s *testTypeConvertSuite) TestConvert(c *C) {
 	signedAccept(c, mysql.TypeFloat, float64(123), "123")
 	signedAccept(c, mysql.TypeDouble, " -23.54", "-23.54")
 	signedDeny(c, mysql.TypeDouble, "-23.54a", "-23.54")
+	signedDeny(c, mysql.TypeDouble, "-23.54e2e", "-2354")
+	signedDeny(c, mysql.TypeDouble, "+.e", "0")
+	signedAccept(c, mysql.TypeDouble, "1e+1", "10")
 
 	// year
 	signedDeny(c, mysql.TypeYear, 123, "<nil>")
@@ -554,12 +641,12 @@ func (s *testTypeConvertSuite) TestConvert(c *C) {
 	signedAccept(c, mysql.TypeNewDecimal, NewDecFromInt(12300000), "12300000")
 	dec := NewDecFromInt(-123)
 	dec.Shift(-5)
-	dec.Round(dec, 5)
+	dec.Round(dec, 5, ModeHalfEven)
 	signedAccept(c, mysql.TypeNewDecimal, dec, "-0.00123")
 }
 
 func (s *testTypeConvertSuite) TestGetValidFloat(c *C) {
-	cases := []struct {
+	tests := []struct {
 		origin string
 		valid  string
 	}{
@@ -570,9 +657,193 @@ func (s *testTypeConvertSuite) TestGetValidFloat(c *C) {
 		{"123..34", "123."},
 		{"123.23E-10", "123.23E-10"},
 		{"1.1e1.3", "1.1e1"},
+		{"11e1.3", "11e1"},
 		{"1.1e-13a", "1.1e-13"},
+		{"1.", "1."},
+		{".1", ".1"},
+		{"", "0"},
+		{"123e+", "123"},
+		{"123.e", "123."},
 	}
-	for _, ca := range cases {
-		c.Assert(getValidFloatPrefix(ca.origin), Equals, ca.valid)
+	sc := new(variable.StatementContext)
+	for _, tt := range tests {
+		prefix, _ := getValidFloatPrefix(sc, tt.origin)
+		c.Assert(prefix, Equals, tt.valid)
+		_, err := strconv.ParseFloat(prefix, 64)
+		c.Assert(err, IsNil)
+	}
+	_, err := floatStrToIntStr("1e9223372036854775807")
+	c.Assert(terror.ErrorEqual(err, ErrOverflow), IsTrue)
+	_, err = floatStrToIntStr("1e21")
+	c.Assert(terror.ErrorEqual(err, ErrOverflow), IsTrue)
+}
+
+// TestConvertTime tests time related conversion.
+// time conversion is complicated including Date/Datetime/Time/Timestamp etc,
+// Timestamp may involving timezone.
+func (s *testTypeConvertSuite) TestConvertTime(c *C) {
+	timezones := []*time.Location{
+		time.UTC,
+		time.FixedZone("UTC", 3*3600),
+		time.Local,
+	}
+
+	for _, timezone := range timezones {
+		sc := &variable.StatementContext{
+			TimeZone: timezone,
+		}
+		testConvertTimeTimeZone(c, sc)
+	}
+}
+
+func testConvertTimeTimeZone(c *C, sc *variable.StatementContext) {
+	raw := FromDate(2002, 3, 4, 4, 6, 7, 8)
+	tests := []struct {
+		input  Time
+		target *FieldType
+		expect Time
+	}{
+		{
+			input:  Time{Type: mysql.TypeDatetime, Time: raw, TimeZone: sc.TimeZone},
+			target: NewFieldType(mysql.TypeTimestamp),
+			expect: Time{Type: mysql.TypeTimestamp, Time: raw, TimeZone: sc.TimeZone},
+		},
+		{
+			input:  Time{Type: mysql.TypeDatetime, Time: raw, TimeZone: nil},
+			target: NewFieldType(mysql.TypeTimestamp),
+			expect: Time{Type: mysql.TypeTimestamp, Time: raw, TimeZone: sc.TimeZone},
+		},
+		{
+			input:  Time{Type: mysql.TypeDatetime, Time: raw, TimeZone: time.UTC},
+			target: NewFieldType(mysql.TypeTimestamp),
+			expect: Time{Type: mysql.TypeTimestamp, Time: raw, TimeZone: sc.TimeZone},
+		},
+		{
+			input:  Time{Type: mysql.TypeTimestamp, Time: raw, TimeZone: sc.TimeZone},
+			target: NewFieldType(mysql.TypeDatetime),
+			expect: Time{Type: mysql.TypeDatetime, Time: raw, TimeZone: nil},
+		},
+	}
+
+	for _, test := range tests {
+		var d Datum
+		d.SetMysqlTime(test.input)
+		nd, err := d.ConvertTo(sc, test.target)
+		c.Assert(err, IsNil)
+		t := nd.GetMysqlTime()
+		c.Assert(t.Type, Equals, test.expect.Type)
+		c.Assert(t.Time, Equals, test.expect.Time)
+		if test.expect.Type == mysql.TypeTimestamp {
+			c.Assert(t.TimeZone, Equals, test.expect.TimeZone)
+		}
+	}
+}
+
+func (s *testTypeConvertSuite) TestConvertJSONToInt(c *C) {
+	var tests = []struct {
+		In  string
+		Out int64
+	}{
+		{`{}`, 0},
+		{`[]`, 0},
+		{`3`, 3},
+		{`-3`, -3},
+		{`4.5`, 5},
+		{`true`, 1},
+		{`false`, 0},
+		{`null`, 0},
+		{`"hello"`, 0},
+		{`"123hello"`, 123},
+		{`"1234"`, 1234},
+	}
+	for _, tt := range tests {
+		j, err := json.ParseFromString(tt.In)
+		c.Assert(err, IsNil)
+
+		casted, _ := ConvertJSONToInt(new(variable.StatementContext), j, false)
+		c.Assert(casted, Equals, tt.Out)
+	}
+}
+
+func (s *testTypeConvertSuite) TestConvertJSONToFloat(c *C) {
+	var tests = []struct {
+		In  string
+		Out float64
+	}{
+		{`{}`, 0},
+		{`[]`, 0},
+		{`3`, 3},
+		{`-3`, -3},
+		{`4.5`, 4.5},
+		{`true`, 1},
+		{`false`, 0},
+		{`null`, 0},
+		{`"hello"`, 0},
+		{`"123.456hello"`, 123.456},
+		{`"1234"`, 1234},
+	}
+	for _, tt := range tests {
+		j, err := json.ParseFromString(tt.In)
+		c.Assert(err, IsNil)
+		casted, _ := ConvertJSONToFloat(new(variable.StatementContext), j)
+		c.Assert(casted, Equals, tt.Out)
+	}
+}
+
+func (s *testTypeConvertSuite) TestNumberToDuration(c *C) {
+	var testCases = []struct {
+		number int64
+		fsp    int
+		hasErr bool
+		year   int
+		month  int
+		day    int
+		hour   int
+		minute int
+		second int
+	}{
+		{20171222, 0, true, 0, 0, 0, 0, 0, 0},
+		{171222, 0, false, 0, 0, 0, 17, 12, 22},
+		{20171222020005, 0, false, 2017, 12, 22, 02, 00, 05},
+		{10000000000, 0, true, 0, 0, 0, 0, 0, 0},
+		{171222, 1, false, 0, 0, 0, 17, 12, 22},
+		{176022, 1, true, 0, 0, 0, 0, 0, 0},
+		{8391222, 1, true, 0, 0, 0, 0, 0, 0},
+		{8381222, 0, false, 0, 0, 0, 838, 12, 22},
+		{1001222, 0, false, 0, 0, 0, 100, 12, 22},
+		{171260, 1, true, 0, 0, 0, 0, 0, 0},
+	}
+
+	for _, tc := range testCases {
+		t, err := NumberToDuration(tc.number, tc.fsp)
+		if tc.hasErr {
+			c.Assert(err, NotNil)
+			continue
+		}
+		c.Assert(err, IsNil)
+		c.Assert(t.Time.Year(), Equals, tc.year)
+		c.Assert(t.Time.Month(), Equals, tc.month)
+		c.Assert(t.Time.Day(), Equals, tc.day)
+		c.Assert(t.Time.Hour(), Equals, tc.hour)
+		c.Assert(t.Time.Minute(), Equals, tc.minute)
+		c.Assert(t.Time.Second(), Equals, tc.second)
+	}
+
+	var testCases1 = []struct {
+		number int64
+		neg    bool
+		dur    time.Duration
+	}{
+		{171222, false, 17*time.Hour + 12*time.Minute + 22*time.Second},
+		{-171222, true, -(17*time.Hour + 12*time.Minute + 22*time.Second)},
+	}
+
+	for _, tc := range testCases1 {
+		t, err := NumberToDuration(tc.number, 0)
+		c.Assert(err, IsNil)
+		c.Assert(t.IsNegative(), Equals, tc.neg)
+		d, err1 := t.ConvertToDuration()
+		c.Assert(err1, IsNil)
+		c.Assert(d.Duration, Equals, tc.dur)
 	}
 }

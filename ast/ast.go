@@ -116,12 +116,12 @@ type ResultField struct {
 	TableAsName  model.CIStr
 	DBName       model.CIStr
 
-	// The expression for the result field. If it is generated from a select field, it would
+	// Expr represents the expression for the result field. If it is generated from a select field, it would
 	// be the expression of that select field, otherwise the type would be ValueExpr and value
 	// will be set for every retrieved row.
 	Expr      ExprNode
 	TableName *TableName
-	// Whether this result field has been referenced.
+	// Referenced indicates the result field has been referenced or not.
 	// If not, we don't need to get the values.
 	Referenced bool
 }
@@ -145,7 +145,7 @@ type RecordSet interface {
 	Close() error
 }
 
-// The ResultSetNode interface has a ResultFields property, represents a Node that returns result set.
+// ResultSetNode interface has a ResultFields property, represents a Node that returns result set.
 // Implementations include SelectStmt, SubqueryExpr, TableSource, TableName and Join.
 type ResultSetNode interface {
 	Node
@@ -155,26 +155,27 @@ type ResultSetNode interface {
 	SetResultFields(fields []*ResultField)
 }
 
+// SensitiveStmtNode overloads StmtNode and provides a SecureText method.
+type SensitiveStmtNode interface {
+	StmtNode
+	// SecureText is different from Text that it hide password information.
+	SecureText() string
+}
+
 // Statement is an interface for SQL execution.
 // NOTE: all Statement implementations must be safe for
 // concurrent using by multiple goroutines.
 // If the Exec method requires any Execution domain local data,
 // they must be held out of the implementing instance.
 type Statement interface {
-	// Explain gets the execution plans.
-	//Explain(ctx context.Context, w format.Formatter)
-
-	// IsDDL shows whether the statement is an DDL operation.
-	IsDDL() bool
-
 	// OriginText gets the origin SQL text.
 	OriginText() string
 
-	// SetText sets the executive SQL text.
-	SetText(text string)
-
 	// Exec executes SQL and gets a Recordset.
 	Exec(ctx context.Context) (RecordSet, error)
+
+	// IsPrepared returns whether this statement is prepared statement.
+	IsPrepared() bool
 }
 
 // Visitor visits a Node.

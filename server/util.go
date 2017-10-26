@@ -41,6 +41,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/juju/errors"
 	"github.com/pingcap/tidb/mysql"
 	"github.com/pingcap/tidb/util/arena"
 	"github.com/pingcap/tidb/util/hack"
@@ -193,21 +194,26 @@ func dumpBinaryTime(dur time.Duration) (data []byte) {
 	return
 }
 
-func dumpBinaryDateTime(t types.Time, loc *time.Location) (data []byte) {
+func dumpBinaryDateTime(t types.Time, loc *time.Location) (data []byte, err error) {
 	if t.Type == mysql.TypeTimestamp && loc != nil {
-		t.Time = t.In(loc)
+		// TODO: Consider time_zone variable.
+		t1, err := t.Time.GoTime(time.Local)
+		if err != nil {
+			return nil, errors.Errorf("FATAL: convert timestamp %v go time return error!", t.Time)
+		}
+		t.Time = types.FromGoTime(t1.In(loc))
 	}
 
-	year, mon, day := t.Year(), t.Month(), t.Day()
+	year, mon, day := t.Time.Year(), t.Time.Month(), t.Time.Day()
 	if t.IsZero() {
-		year, mon, day = 1, time.January, 1
+		year, mon, day = 1, int(time.January), 1
 	}
 	switch t.Type {
 	case mysql.TypeTimestamp, mysql.TypeDatetime:
 		data = append(data, 11)
 		data = append(data, dumpUint16(uint16(year))...)
-		data = append(data, byte(mon), byte(day), byte(t.Hour()), byte(t.Minute()), byte(t.Second()))
-		data = append(data, dumpUint32(uint32((t.Nanosecond() / 1000)))...)
+		data = append(data, byte(mon), byte(day), byte(t.Time.Hour()), byte(t.Time.Minute()), byte(t.Time.Second()))
+		data = append(data, dumpUint32(uint32(t.Time.Microsecond()))...)
 	case mysql.TypeDate, mysql.TypeNewDate:
 		data = append(data, 4)
 		data = append(data, dumpUint16(uint16(year))...) //year
@@ -225,7 +231,7 @@ func uniformValue(value interface{}) interface{} {
 	case int32:
 		return int64(v)
 	case int64:
-		return int64(v)
+		return v
 	case uint8:
 		return uint64(v)
 	case uint16:
@@ -233,7 +239,7 @@ func uniformValue(value interface{}) interface{} {
 	case uint32:
 		return uint64(v)
 	case uint64:
-		return uint64(v)
+		return v
 	default:
 		return value
 	}
@@ -279,7 +285,7 @@ func dumpRowValuesBinary(alloc arena.Allocator, columns []*ColumnInfo, row []typ
 			case mysql.TypeInt24, mysql.TypeLong:
 				data = append(data, dumpUint32(uint32(v))...)
 			case mysql.TypeLonglong:
-				data = append(data, dumpUint64(uint64(v))...)
+				data = append(data, dumpUint64(v)...)
 			}
 		case types.KindFloat32:
 			floatBits := math.Float32bits(val.GetFloat32())
@@ -292,32 +298,42 @@ func dumpRowValuesBinary(alloc arena.Allocator, columns []*ColumnInfo, row []typ
 		case types.KindMysqlDecimal:
 			data = append(data, dumpLengthEncodedString(hack.Slice(val.GetMysqlDecimal().String()), alloc)...)
 		case types.KindMysqlTime:
-			data = append(data, dumpBinaryDateTime(val.GetMysqlTime(), nil)...)
+			tmp, err := dumpBinaryDateTime(val.GetMysqlTime(), nil)
+			if err != nil {
+				return data, errors.Trace(err)
+			}
+			data = append(data, tmp...)
 		case types.KindMysqlDuration:
 			data = append(data, dumpBinaryTime(val.GetMysqlDuration().Duration)...)
 		case types.KindMysqlSet:
 			data = append(data, dumpLengthEncodedString(hack.Slice(val.GetMysqlSet().String()), alloc)...)
-		case types.KindMysqlHex:
-			data = append(data, dumpLengthEncodedString(hack.Slice(val.GetMysqlHex().ToString()), alloc)...)
 		case types.KindMysqlEnum:
 			data = append(data, dumpLengthEncodedString(hack.Slice(val.GetMysqlEnum().String()), alloc)...)
-		case types.KindMysqlBit:
-			data = append(data, dumpLengthEncodedString(hack.Slice(val.GetMysqlBit().ToString()), alloc)...)
+		case types.KindBinaryLiteral, types.KindMysqlBit:
+			data = append(data, dumpLengthEncodedString(hack.Slice(val.GetBinaryLiteral().ToString()), alloc)...)
 		}
 	}
 	return
 }
 
-func dumpTextValue(mysqlType uint8, value types.Datum) ([]byte, error) {
+func dumpTextValue(colInfo *ColumnInfo, value types.Datum) ([]byte, error) {
 	switch value.Kind() {
 	case types.KindInt64:
 		return strconv.AppendInt(nil, value.GetInt64(), 10), nil
 	case types.KindUint64:
 		return strconv.AppendUint(nil, value.GetUint64(), 10), nil
 	case types.KindFloat32:
-		return strconv.AppendFloat(nil, value.GetFloat64(), 'f', -1, 32), nil
+		prec := -1
+		if colInfo.Decimal > 0 && int(colInfo.Decimal) != mysql.NotFixedDec {
+			prec = int(colInfo.Decimal)
+		}
+		return strconv.AppendFloat(nil, value.GetFloat64(), 'f', prec, 32), nil
 	case types.KindFloat64:
-		return strconv.AppendFloat(nil, value.GetFloat64(), 'f', -1, 64), nil
+		prec := -1
+		if colInfo.Decimal > 0 && int(colInfo.Decimal) != mysql.NotFixedDec {
+			prec = int(colInfo.Decimal)
+		}
+		return strconv.AppendFloat(nil, value.GetFloat64(), 'f', prec, 64), nil
 	case types.KindString, types.KindBytes:
 		return value.GetBytes(), nil
 	case types.KindMysqlTime:
@@ -330,11 +346,11 @@ func dumpTextValue(mysqlType uint8, value types.Datum) ([]byte, error) {
 		return hack.Slice(value.GetMysqlEnum().String()), nil
 	case types.KindMysqlSet:
 		return hack.Slice(value.GetMysqlSet().String()), nil
-	case types.KindMysqlBit:
-		return hack.Slice(value.GetMysqlBit().ToString()), nil
-	case types.KindMysqlHex:
-		return hack.Slice(value.GetMysqlHex().ToString()), nil
+	case types.KindMysqlJSON:
+		return hack.Slice(value.GetMysqlJSON().String()), nil
+	case types.KindBinaryLiteral, types.KindMysqlBit:
+		return hack.Slice(value.GetBinaryLiteral().ToString()), nil
 	default:
-		return nil, errInvalidType.Gen("invalid type %T", value)
+		return nil, errInvalidType.Gen("invalid type %v", value.Kind())
 	}
 }

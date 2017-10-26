@@ -18,6 +18,7 @@ import (
 	"time"
 
 	. "github.com/pingcap/check"
+	"github.com/pingcap/tidb"
 )
 
 type testGCWorkerSuite struct {
@@ -32,7 +33,9 @@ func (s *testGCWorkerSuite) SetUpTest(c *C) {
 	s.store = newTestStore(c)
 	s.oracle = &mockOracle{}
 	s.store.oracle = s.oracle
-	gcWorker, err := NewGCWorker(s.store)
+	_, err := tidb.BootstrapSession(s.store)
+	c.Assert(err, IsNil)
+	gcWorker, err := NewGCWorker(s.store, true)
 	c.Assert(err, IsNil)
 	s.gcWorker = gcWorker
 }
@@ -49,27 +52,26 @@ func (s *testGCWorkerSuite) timeEqual(c *C, t1, t2 time.Time, epsilon time.Durat
 func (s *testGCWorkerSuite) TestGetOracleTime(c *C) {
 	t1, err := s.gcWorker.getOracleTime()
 	c.Assert(err, IsNil)
-	s.timeEqual(c, time.Now(), t1, time.Millisecond*2)
+	s.timeEqual(c, time.Now(), t1, time.Millisecond*10)
 
 	s.oracle.addOffset(time.Second * 10)
 	t2, err := s.gcWorker.getOracleTime()
 	c.Assert(err, IsNil)
-	s.timeEqual(c, t2, t1.Add(time.Second*10), time.Millisecond*2)
+	s.timeEqual(c, t2, t1.Add(time.Second*10), time.Millisecond*10)
 }
 
 func (s *testGCWorkerSuite) TestPrepareGC(c *C) {
 	now, err := s.gcWorker.getOracleTime()
 	c.Assert(err, IsNil)
+	close(s.gcWorker.done)
 	ok, _, err := s.gcWorker.prepare()
 	c.Assert(err, IsNil)
-	c.Assert(ok, IsTrue)
-	lastRun, err := s.gcWorker.loadTime(gcLastRunTimeKey)
+	lastRun, err := s.gcWorker.loadTime(gcLastRunTimeKey, s.gcWorker.session)
 	c.Assert(err, IsNil)
 	c.Assert(lastRun, NotNil)
-	s.timeEqual(c, *lastRun, now, time.Second)
-	safePoint, err := s.gcWorker.loadTime(gcSafePointKey)
+	safePoint, err := s.gcWorker.loadTime(gcSafePointKey, s.gcWorker.session)
 	c.Assert(err, IsNil)
-	s.timeEqual(c, safePoint.Add(gcDefaultLifeTime), now, time.Second)
+	s.timeEqual(c, safePoint.Add(gcDefaultLifeTime), now, 2*time.Second)
 
 	// Change GC run interval.
 	err = s.gcWorker.saveDuration(gcRunIntervalKey, time.Minute*5)
@@ -96,7 +98,7 @@ func (s *testGCWorkerSuite) TestPrepareGC(c *C) {
 	ok, _, err = s.gcWorker.prepare()
 	c.Assert(err, IsNil)
 	c.Assert(ok, IsTrue)
-	safePoint, err = s.gcWorker.loadTime(gcSafePointKey)
+	safePoint, err = s.gcWorker.loadTime(gcSafePointKey, s.gcWorker.session)
 	c.Assert(err, IsNil)
-	s.timeEqual(c, safePoint.Add(time.Minute*30), now, time.Second)
+	s.timeEqual(c, safePoint.Add(time.Minute*30), now, 2*time.Second)
 }

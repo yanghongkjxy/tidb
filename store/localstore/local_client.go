@@ -1,11 +1,11 @@
 package localstore
 
 import (
-	"io"
-
 	"github.com/juju/errors"
 	"github.com/pingcap/tidb/kv"
+	"github.com/pingcap/tidb/terror"
 	"github.com/pingcap/tipb/go-tipb"
+	goctx "golang.org/x/net/context"
 )
 
 type dbClient struct {
@@ -13,7 +13,7 @@ type dbClient struct {
 	regionInfo []*regionInfo
 }
 
-func (c *dbClient) Send(req *kv.Request) kv.Response {
+func (c *dbClient) Send(ctx goctx.Context, req *kv.Request) kv.Response {
 	it := &response{
 		client:      c,
 		concurrency: req.Concurrency,
@@ -36,7 +36,7 @@ func (c *dbClient) Send(req *kv.Request) kv.Response {
 	return it
 }
 
-func (c *dbClient) SupportRequestType(reqType, subType int64) bool {
+func (c *dbClient) IsRequestTypeSupported(reqType, subType int64) bool {
 	switch reqType {
 	case kv.ReqTypeSelect, kv.ReqTypeIndex:
 		switch subType {
@@ -82,6 +82,10 @@ func supportExpr(exprType tipb.ExprType) bool {
 	// other functions
 	case tipb.ExprType_Coalesce, tipb.ExprType_IsNull:
 		return true
+	case tipb.ExprType_JsonType, tipb.ExprType_JsonExtract, tipb.ExprType_JsonUnquote, tipb.ExprType_JsonValid,
+		tipb.ExprType_JsonObject, tipb.ExprType_JsonArray, tipb.ExprType_JsonMerge, tipb.ExprType_JsonSet,
+		tipb.ExprType_JsonInsert, tipb.ExprType_JsonReplace, tipb.ExprType_JsonRemove, tipb.ExprType_JsonContains:
+		return true
 	case kv.ReqSubTypeDesc:
 		return true
 	default:
@@ -91,28 +95,6 @@ func supportExpr(exprType tipb.ExprType) bool {
 
 func (c *dbClient) updateRegionInfo() {
 	c.regionInfo = c.store.pd.GetRegionInfo()
-}
-
-type localResponseReader struct {
-	s []byte
-	i int64
-}
-
-func (r *localResponseReader) Read(b []byte) (n int, err error) {
-	if len(b) == 0 {
-		return 0, nil
-	}
-	if r.i >= int64(len(r.s)) {
-		return 0, io.EOF
-	}
-	n = copy(b, r.s[r.i:])
-	r.i += int64(n)
-	return
-}
-
-func (r *localResponseReader) Close() error {
-	r.i = int64(len(r.s))
-	return nil
 }
 
 type response struct {
@@ -133,7 +115,7 @@ type task struct {
 	region  *localRegion
 }
 
-func (it *response) Next() (resp io.ReadCloser, err error) {
+func (it *response) Next() (resp []byte, err error) {
 	if it.finished {
 		return nil, nil
 	}
@@ -143,7 +125,8 @@ func (it *response) Next() (resp io.ReadCloser, err error) {
 	case err = <-it.errChan:
 	}
 	if err != nil {
-		it.Close()
+		err1 := it.Close()
+		terror.Log(errors.Trace(err1))
 		return nil, errors.Trace(err)
 	}
 	if len(regionResp.newStartKey) != 0 {
@@ -157,9 +140,10 @@ func (it *response) Next() (resp io.ReadCloser, err error) {
 	}
 	it.respGot++
 	if it.reqSent == len(it.tasks) && it.respGot == it.reqSent {
-		it.Close()
+		err = it.Close()
+		terror.Log(errors.Trace(err))
 	}
-	return &localResponseReader{s: regionResp.data}, nil
+	return regionResp.data, nil
 }
 
 func (it *response) createRetryTasks(resp *regionResponse) []*task {
